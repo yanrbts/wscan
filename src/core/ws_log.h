@@ -63,7 +63,7 @@ enum {
 #define ws_log_fatal(...) ws_log_log(LOG_FATAL, __FILE__, __LINE__, __VA_ARGS__)
 
 const char* ws_log_level_string(int level);
-void ws_log_set_lock(ws_logfun fn, void *udata);
+void ws_log_set_lock(ws_loglockfun fn, void *udata);
 void ws_log_set_level(int level);
 void ws_log_set_quiet(bool enable);
 int ws_log_add_callback(ws_logfun fn, void *udata, int level);

@@ -101,7 +101,7 @@ const char* log_level_string(int level) {
     return level_strings[level];
 }
 
-void ws_log_set_lock(ws_logfun fn, void *udata) {
+void ws_log_set_lock(ws_loglockfun fn, void *udata) {
     wslog.lock = fn;
     wslog.udata = udata;
 }
@@ -114,7 +114,7 @@ void ws_log_set_quiet(bool enable) {
     wslog.quiet = enable;
 }
 
-int ws_log_add_callback(ws_logfun fn, void *udata, int level) {
+int ws_log_add_callback(ws_loglockfun fn, void *udata, int level) {
     for (int i = 0; i < WS_MAX_CALLBACKS; i++) {
         if (!wslog.callbacks[i].fn) {
             wslog.callbacks[i] = (callback){ fn, udata, level };
@@ -163,6 +163,6 @@ void ws_log_log(int level, const char *file, int line, const char *fmt, ...) {
             va_end(ev.ap);
         }
     }
-    
+
     unlock();
 }
