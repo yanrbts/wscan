@@ -25,7 +25,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-#include "ws_log.h"
+#include <ws_log.h>
 
 #define WS_MAX_CALLBACKS 32
 
@@ -114,7 +114,7 @@ void ws_log_set_quiet(bool enable) {
     wslog.quiet = enable;
 }
 
-int ws_log_add_callback(ws_loglockfun fn, void *udata, int level) {
+int ws_log_add_callback(ws_logfun fn, void *udata, int level) {
     for (int i = 0; i < WS_MAX_CALLBACKS; i++) {
         if (!wslog.callbacks[i].fn) {
             wslog.callbacks[i] = (callback){ fn, udata, level };
@@ -130,10 +130,8 @@ int ws_log_add_fp(FILE *fp, int level) {
 }
 
 static void ws_init_event(ws_log *ev, void *udata) {
-    if (!ev->time) {
-        time_t t = time(NULL);
-        ev->time = localtime(&t);
-    }
+    time_t t = time(NULL);
+    ev->time = localtime(&t);
     ev->udata = udata;
 }
 
@@ -156,7 +154,7 @@ void ws_log_log(int level, const char *file, int line, const char *fmt, ...) {
 
     for (int i = 0; i < WS_MAX_CALLBACKS && wslog.callbacks[i].fn; i++) {
         callback *cb = &wslog.callbacks[i];
-        if (level >= cb->level) {
+        if (cb->fn && level >= cb->level) {
             ws_init_event(&ev, cb->udata);
             va_start(ev.ap, fmt);
             cb->fn(&ev);
