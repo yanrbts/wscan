@@ -37,71 +37,75 @@
 #include <event2/util.h>
 #include <event2/buffer.h>
 #include <event2/keyvalq_struct.h> // For struct evkeyvalq
-#include <ws_rbtree.h> // Assuming this is your red-black tree implementation
+#include <event2/bufferevent_ssl.h>
+#include <evhttp.h>
+#include <ws_rbtree.h>
+#include <ws_ssl.h>
 
-// 定义HTTP请求方法枚举
+// Define HTTP request method enum
 typedef enum {
     WS_HTTP_GET,
     WS_HTTP_POST,
     WS_HTTP_PUT,
     WS_HTTP_DELETE,
-    // 您可以根据需要添加更多方法
 } ws_http_method;
 
-// HTTP响应回调函数类型
-// 参数：
-//   status_code: HTTP 状态码 (如 200, 404, 500)
-//   headers: 响应头 (struct evkeyvalq 类型，可使用TAILQ_FOREACH遍历)
-//   body_data: 响应体数据指针
-//   body_len: 响应体数据长度
-//   user_data: 用户传入的上下文数据
-//   error_code: 如果请求失败，表示错误码 (0表示成功，-1超时，-2连接/协议错误，>=400为HTTP状态码错误)
+// HTTP response callback function type
+// Parameters:
+//   status_code: HTTP status code (e.g., 200, 404, 500)
+//   headers: Response headers (struct evkeyvalq type, can be iterated using TAILQ_FOREACH)
+//   body_data: Pointer to the response body data
+//   body_len: Length of the response body data
+//   user_data: User-provided context data
+//   error_code: Error code if the request failed 
+//   (0 for success, -1 for timeout, -2 for connection/protocol error, >=400 for HTTP status code errors)
 typedef void (*ws_event_http_cb)(int status_code, struct evkeyvalq *headers,
                                  const char *body_data, size_t body_len,
                                  void *user_data, int error_code);
 
-// 通用事件回调函数类型
+// Generic event callback function type
 typedef void (*ws_event_cb)(int fd, short events, void *arg);
 
-// 事件类型枚举
+// Event type enum
 typedef enum {
     WS_EVENT_NORMAL = 0,
     WS_EVENT_HTTP = 1,
     WS_EVENT_TIME = 2
 } ws_event_type;
 
-// 事件基结构体
+// Event base structure
 typedef struct ws_event_base {
     struct event_base *base;
-    long long next_event_id; // 用于生成唯一的事件ID
+    long long next_event_id; // Used to generate unique event IDs
     int total_requests;
     int success_requests;
     int failed_requests;
-    rbTable *events; // 红黑树来管理事件
+    rbTable *events; // Red-black tree to manage events
+    SSL_CTX *ssl_ctx;
 } ws_event_base;
 
-// 事件句柄结构体
+// Event handle structure
 typedef struct ws_event_handle {
-    long long id;              // 唯一标识符，作为红黑树的键
-    ws_event_type type;        // 事件类型 (普通, HTTP, 时间)
-    ws_event_base *base;       // 指向其所属的事件基
+    long long id;              // Unique identifier, used as the key for the red-black tree
+    ws_event_type type;        // Event type (Normal, HTTP, Time)
+    ws_event_base *base;       // Pointer to its owning event base
 
     union {
-        /* 普通事件 */
+        /* Normal event */
         struct {
             int fd;
             struct event *ev;
             ws_event_cb callback;
             bool is_persistent;
         } normal;
-        /* HTTP事件 */
+        /* HTTP event */
         struct {
-            // 注意：http.conn 不再在 ws_event_handle 中显式保存
-            // 它的生命周期由 libevent 管理，或在需要连接池时由连接池管理
+            // Note: http.conn is no longer explicitly saved in ws_event_handle
+            // Its lifecycle is managed by libevent, or by a connection pool if needed
             ws_event_http_cb callback;
-            void *internal_ctx; // 指向内部的HTTP请求上下文
+            void *internal_ctx; // Pointer to the internal HTTP request context
         } http;
-        /* 时间事件 */
+        /* Time event */
         struct {
             struct event *ev;
             ws_event_cb callback;
@@ -110,103 +114,114 @@ typedef struct ws_event_handle {
         } time;
     };
 
-    void *arg; // 用户传递给回调函数的参数
+    void *arg;
 } ws_event_handle;
 
-// HTTP 请求参数结构体 (取代原有的 host, port, uri 参数)
+// HTTP Request parameters structure (replaces original host, port, uri parameters)
 typedef struct ws_http_request_options {
-    ws_http_method method;              // 请求方法 (GET, POST等)
-    const char *url;                    // 完整URL (如 "http://example.com/path?query=val")
-    struct evkeyvalq *headers;          // 可选的自定义请求头
-    const char *body_data;              // POST/PUT 请求体数据 (可选)
-    size_t body_len;                    // POST/PUT 请求体数据长度
-    long timeout_ms;                    // 请求超时时间 (毫秒，0表示使用默认或无超时)
-    bool follow_redirects;              // 是否自动跟随重定向 (需要额外的逻辑实现)
+    ws_http_method method;               // Request method (GET, POST, etc.)
+    const char *url;                     // Full URL (e.g., "http://example.com/path?query=val")
+    struct evkeyvalq *headers;           // Optional custom request headers
+    const char *body_data;               // POST/PUT request body data (optional)
+    size_t body_len;                     // Length of POST/PUT request body data
+    long timeout_ms;                     // Request timeout in milliseconds (0 means default or no timeout)
+    bool follow_redirects;               // Whether to automatically follow redirects (requires additional logic)
 } ws_http_request_options;
 
 
 /**
- * @brief 创建一个新的事件基。
- * 此函数初始化一个新的事件基，它是事件循环的核心。
- * 它为 ws_event_base 结构分配内存并设置事件基。
- * @return 指向新创建的 ws_event_base 结构的指针，失败时返回NULL。
+ * @brief Creates a new event base.
+ * This function initializes a new event base, which is the core of the event loop.
+ * It allocates memory for the ws_event_base structure and sets up the event base.
+ * @return A pointer to the newly created ws_event_base structure, or NULL on failure.
  */
 ws_event_base *ws_event_new(void);
 
 /**
- * @brief 释放 ws_event 结构及其相关资源。
- * 此函数负责清理事件基并释放为 ws_event 结构分配的内存。
- * 它确保所有资源都被正确释放，以防止内存泄漏。
- * @param we 指向要释放的 ws_event_base 结构的指针。
+ * @brief Frees the ws_event_base structure and its associated resources.
+ * This function is responsible for cleaning up the event base and freeing memory
+ * allocated for the ws_event_base structure. It ensures that all resources
+ * are properly released to prevent memory leaks.
+ * @param we A pointer to the ws_event_base structure to be freed.
  */
 void ws_event_free(ws_event_base *we);
 
 /**
- * @brief 删除一个事件句柄。
- * 此函数负责从事件循环中移除事件并释放相关资源。
- * 它确保不再监视事件并正确释放内存。
- * @param handle 指向要删除的 ws_event_handle 结构的指针。
+ * @brief Deletes an event handle.
+ * This function is responsible for removing an event from the event loop and
+ * freeing associated resources. It ensures that the event is no longer monitored
+ * and memory is properly released.
+ * @param handle A pointer to the ws_event_handle structure to be deleted.
  */
 void ws_event_del(ws_event_handle *handle);
 
 /**
- * @brief 向事件循环添加一个普通事件。
- * 此函数创建一个新事件，当文件描述符准备好读写时将触发。
- * 它允许异步I/O操作，这对于网络套接字或文件描述符很有用。
- * @param we 指向 ws_event_base 结构的指针。
- * @param fd 要监视的文件描述符。
- * @param events 要监视的事件 (例如，EV_READ, EV_WRITE)。
- * @param callback 事件触发时要调用的回调函数。
- * @param arg 传递给回调函数的参数。
- * @param is_persistent 如果为true，事件将是持久的，并将重复触发直到明确移除。
- * @return 指向新创建的 ws_event_handle 结构的指针，失败时返回NULL。
+ * @brief Adds a normal event to the event loop.
+ * This function creates a new event that will trigger when a file descriptor
+ * is ready for reading or writing. It allows for asynchronous I/O operations,
+ * useful for network sockets or file descriptors.
+ * @param we A pointer to the ws_event_base structure.
+ * @param fd The file descriptor to monitor.
+ * @param events The events to monitor (e.g., EV_READ, EV_WRITE).
+ * @param callback The callback function to call when the event triggers.
+ * @param arg An argument to pass to the callback function.
+ * @param is_persistent If true, the event will be persistent and will
+ * repeatedly trigger until explicitly removed.
+ * @return A pointer to the newly created ws_event_handle structure, or NULL on failure.
  */
 ws_event_handle *ws_event_add(ws_event_base *we,
     int fd, short events,
     ws_event_cb callback, void *arg, bool is_persistent);
 
 /**
- * @brief 向事件循环发送一个HTTP请求。
- * 此函数创建一个新的HTTP请求，并在请求完成后触发回调。
- * 它允许异步处理HTTP请求，这对于Web应用程序或服务很有用。
- * @param we 指向 ws_event_base 结构的指针。
- * @param options 指向包含请求配置的结构体。
- * @param callback HTTP请求完成时要调用的回调函数。
- * @param arg 传递给回调函数的参数。
- * @return 指向新创建的 ws_event_handle 结构的指针，成功启动请求时返回，失败时返回NULL。
- * 请求结果将在回调函数中异步返回。
+ * @brief Sends an HTTP request to the event loop.
+ * This function creates a new HTTP request and triggers a callback when the
+ * request is complete. It allows for asynchronous handling of HTTP requests,
+ * useful for web applications or services.
+ * @param we A pointer to the ws_event_base structure.
+ * @param options A pointer to a structure containing the request configuration.
+ * @param callback The callback function to call when the HTTP request completes.
+ * @param arg An argument to pass to the callback function.
+ * @return A pointer to the newly created ws_event_handle structure if the request
+ * is successfully initiated, or NULL on failure. The request result will
+ * be returned asynchronously in the callback function.
  */
 ws_event_handle *ws_event_http_request(ws_event_base *we,
     const ws_http_request_options *options,
     ws_event_http_cb callback, void *arg);
 
 /**
- * @brief 向事件循环添加一个基于时间的事件。
- * 此函数创建一个新的基于时间的事件，将在指定超时后触发。
- * 它允许在一定时间后安排事件发生，这对于超时或周期性检查等任务很有用。
- * @param we 指向 ws_event_base 结构的指针。
- * @param tv 指向 timeval 结构的指针，指定超时持续时间。
- * @param callback 事件触发时要调用的回调函数。
- * @param arg 传递给回调函数的参数。
- * @param is_persistent 如果为true，事件将是持久的，并将重复触发直到明确移除。
- * @return 指向新创建的 ws_event_handle 结构的指针，失败时返回NULL。
+ * @brief Adds a time-based event to the event loop.
+ * This function creates a new time-based event that will trigger after a
+ * specified timeout duration. It allows for scheduling events to occur after
+ * a certain period, useful for tasks like timeouts or periodic checks.
+ * @param we A pointer to the ws_event_base structure.
+ * @param tv A pointer to a timeval structure specifying the timeout duration.
+ * @param callback The callback function to call when the event triggers.
+ * @param arg An argument to pass to the callback function.
+ * @param is_persistent If true, the event will be persistent and will
+ * repeatedly trigger until explicitly removed.
+ * @return A pointer to the newly created ws_event_handle structure, or NULL on failure.
  */
 ws_event_handle *ws_event_add_time(ws_event_base *we,
     const struct timeval *tv, ws_event_cb callback, void *arg, bool is_persistent);
 
 /**
- * @brief 启动事件循环。
- * 此函数启动事件循环，它将一直运行，直到没有更多事件要处理或循环被停止。
- * 它处理事件并在事件发生时调用关联的回调。
- * @param we 指向 ws_event_base 结构的指针。
+ * @brief Starts the event loop.
+ * This function starts the event loop, which will run until there are no
+ * more events to process or the loop is stopped. It processes events and
+ * calls associated callbacks as events occur.
+ * @param we A pointer to the ws_event_base structure.
+ * @return 0 on successful loop exit, or -1 if an error occurred.
  */
 int ws_event_loop(ws_event_base *we);
 
 /**
- * @brief 停止事件循环。
- * 此函数停止事件循环，使其能够优雅地退出。
- * 通常在应用程序关闭或不再需要处理事件时调用。
- * @param we 指向 ws_event_base 结构的指针。
+ * @brief Stops the event loop.
+ * This function stops the event loop, allowing it to exit gracefully.
+ * It is typically called during application shutdown or when event processing
+ * is no longer needed.
+ * @param we A pointer to the ws_event_base structure.
  */
 void ws_event_stop(ws_event_base *we);
 

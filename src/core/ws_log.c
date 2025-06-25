@@ -130,8 +130,10 @@ int ws_log_add_fp(FILE *fp, int level) {
 }
 
 static void ws_init_event(ws_log *ev, void *udata) {
-    time_t t = time(NULL);
-    ev->time = localtime(&t);
+    if (!ev->time) {
+        time_t t = time(NULL);
+        ev->time = localtime(&t);
+    }
     ev->udata = udata;
 }
 
@@ -154,7 +156,7 @@ void ws_log_log(int level, const char *file, int line, const char *fmt, ...) {
 
     for (int i = 0; i < WS_MAX_CALLBACKS && wslog.callbacks[i].fn; i++) {
         callback *cb = &wslog.callbacks[i];
-        if (cb->fn && level >= cb->level) {
+        if (level >= cb->level) {
             ws_init_event(&ev, cb->udata);
             va_start(ev.ap, fmt);
             cb->fn(&ev);
