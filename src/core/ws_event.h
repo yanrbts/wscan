@@ -33,34 +33,21 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <event2/event.h>
-#include <event2/http.h>
-#include <event2/util.h>
-#include <event2/buffer.h>
 #include <event2/keyvalq_struct.h> // For struct evkeyvalq
-#include <event2/bufferevent_ssl.h>
-#include <evhttp.h>
 #include <ws_rbtree.h>
 #include <ws_ssl.h>
 
-// Define HTTP request method enum
-typedef enum {
-    WS_HTTP_GET,
-    WS_HTTP_POST,
-    WS_HTTP_PUT,
-    WS_HTTP_DELETE,
-} ws_http_method;
-
-// HTTP response callback function type
-// Parameters:
-//   status_code: HTTP status code (e.g., 200, 404, 500)
-//   headers: Response headers (struct evkeyvalq type, can be iterated using TAILQ_FOREACH)
-//   body_data: Pointer to the response body data
-//   body_len: Length of the response body data
-//   user_data: User-provided context data
-//   error_code: Error code if the request failed 
-//   (0 for success, -1 for timeout, -2 for connection/protocol error, >=400 for HTTP status code errors)
+/**
+ * @brief HTTP request completion callback function type.
+ * @param status_code HTTP status code (e.g., 200, 404). 0 for timeout, -1 for other errors.
+ * @param headers HTTP response headers.
+ * @param body Response body data.
+ * @param body_len Length of the response body.
+ * @param user_data User-provided argument.
+ * @param error_code 0 for success, non-zero for errors (e.g., -1 for timeout, -2 for connection error).
+ */
 typedef void (*ws_event_http_cb)(int status_code, struct evkeyvalq *headers,
-                                 const char *body_data, size_t body_len,
+                                 const char *body, size_t body_len,
                                  void *user_data, int error_code);
 
 // Generic event callback function type
@@ -117,18 +104,6 @@ typedef struct ws_event_handle {
     void *arg;
 } ws_event_handle;
 
-// HTTP Request parameters structure (replaces original host, port, uri parameters)
-typedef struct ws_http_request_options {
-    ws_http_method method;               // Request method (GET, POST, etc.)
-    const char *url;                     // Full URL (e.g., "http://example.com/path?query=val")
-    struct evkeyvalq *headers;           // Optional custom request headers
-    const char *body_data;               // POST/PUT request body data (optional)
-    size_t body_len;                     // Length of POST/PUT request body data
-    long timeout_ms;                     // Request timeout in milliseconds (0 means default or no timeout)
-    bool follow_redirects;               // Whether to automatically follow redirects (requires additional logic)
-} ws_http_request_options;
-
-
 /**
  * @brief Creates a new event base.
  * This function initializes a new event base, which is the core of the event loop.
@@ -174,23 +149,6 @@ ws_event_handle *ws_event_add(ws_event_base *we,
     ws_event_cb callback, void *arg, bool is_persistent);
 
 /**
- * @brief Sends an HTTP request to the event loop.
- * This function creates a new HTTP request and triggers a callback when the
- * request is complete. It allows for asynchronous handling of HTTP requests,
- * useful for web applications or services.
- * @param we A pointer to the ws_event_base structure.
- * @param options A pointer to a structure containing the request configuration.
- * @param callback The callback function to call when the HTTP request completes.
- * @param arg An argument to pass to the callback function.
- * @return A pointer to the newly created ws_event_handle structure if the request
- * is successfully initiated, or NULL on failure. The request result will
- * be returned asynchronously in the callback function.
- */
-ws_event_handle *ws_event_http_request(ws_event_base *we,
-    const ws_http_request_options *options,
-    ws_event_http_cb callback, void *arg);
-
-/**
  * @brief Adds a time-based event to the event loop.
  * This function creates a new time-based event that will trigger after a
  * specified timeout duration. It allows for scheduling events to occur after
@@ -224,5 +182,14 @@ int ws_event_loop(ws_event_base *we);
  * @param we A pointer to the ws_event_base structure.
  */
 void ws_event_stop(ws_event_base *we);
+
+/**
+ * @brief Inserts an event handle into the event base's red-black tree.
+ * This function is now public for use by other modules (e.g., ws_http.c).
+ * @param we The event base.
+ * @param item The handle to insert.
+ * @return The inserted handle, or NULL on error (e.g., duplicate ID).
+ */
+ws_event_handle *ws_insert_event(ws_event_base *we, ws_event_handle *item);
 
 #endif // __WS_EVENT_H__

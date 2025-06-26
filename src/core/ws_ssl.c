@@ -39,7 +39,9 @@ int ws_ssl_init_libs(void) {
     // For compatibility, retaining these calls is harmless.
     SSL_library_init(); // Or OPENSSL_init_ssl() for OpenSSL 1.1.0+
     SSL_load_error_strings();
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
     ERR_load_BIO_strings();
+#endif
     OpenSSL_add_all_algorithms(); // Or EVP_add_all_algorithms() for OpenSSL 1.1.0+
 
     ws_log_info("OpenSSL libraries initialized.");

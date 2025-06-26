@@ -25,19 +25,42 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-#ifndef __WS_UTIL_H__
-#define __WS_UTIL_H__
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <crypt.h>
 
-#define UNUSED(x) ((void)(x))
 
-char *ws_trim_whitespace(char *str);
+char *ws_trim_whitespace(char *str) {
+    char *end; 
+    if (!str) return NULL;
+    
+    // Trim leading space 
+    while(isspace((unsigned char)*str)) str++; 
+    if(*str == 0) return str; // All spaces
 
-/* 
- * String comparison is case sensitive 
- * s1 > s2 return 1
- * s1 < s2 return -1
- * s1 == s2 return 0
- */
-int ws_strcasecmp(const char *s1, const char *s2);
+    // Trim trailing space 
+    end = str + strlen(str) - 1; 
+    while(end > str && isspace((unsigned char)*end)) end--;
 
-#endif
+    // Write new null terminator 
+    *(end + 1) = 0; 
+    return str;
+}
+
+
+int ws_strcasecmp(const char *s1, const char *s2) {
+    if (s1 == s2) return 0;
+    if (!s1) return -1;
+    if (!s2) return 1;
+
+    while (*s1 && *s2) {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+

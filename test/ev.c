@@ -37,6 +37,7 @@
 #include <core/ws_log.h>
 #include <ws_malloc.h>
 #include <ws_util.h>
+#include <ws_http.h>
 
 // 普通I/O事件回调示例 (例如，从stdin读取)
 void stdin_read_cb(int fd, short events, void *arg) {
@@ -129,17 +130,17 @@ int main() {
 
     ws_log_info("ws_event_base initialized.");
 
-    // 2. 添加一个普通I/O事件：监听标准输入
-    ws_event_handle *stdin_handle = ws_event_add(we, STDIN_FILENO, EV_READ | EV_PERSIST, stdin_read_cb, we, true);
-    if (!stdin_handle) {
-        ws_log_error("Failed to add stdin event.");
-    } else {
-        ws_log_info("Added stdin monitor event (ID: %lld). Type 'quit' to exit.", stdin_handle->id);
-    }
+    // // 2. 添加一个普通I/O事件：监听标准输入
+    // ws_event_handle *stdin_handle = ws_event_add(we, STDIN_FILENO, EV_READ | EV_PERSIST, stdin_read_cb, we, true);
+    // if (!stdin_handle) {
+    //     ws_log_error("Failed to add stdin event.");
+    // } else {
+    //     ws_log_info("Added stdin monitor event (ID: %lld). Type 'quit' to exit.", stdin_handle->id);
+    // }
 
     // 3. 添加一个时间事件：5秒后触发一次性定时器
     struct timeval tv_one_shot = {5, 0}; // 5秒
-    ws_event_handle *timer_one_shot_handle = ws_event_add_time(we, &tv_one_shot, my_timer_cb, (void*)"One-shot timer", false);
+    ws_event_handle *timer_one_shot_handle = ws_event_add_time(we, &tv_one_shot, my_timer_cb, (void*)"One-shot timer", true);
     if (!timer_one_shot_handle) {
         ws_log_error("Failed to add one-shot timer event.");
     } else {
@@ -161,15 +162,15 @@ int main() {
     }
     
     // 5. 发送一个 POST HTTP请求 (带数据和自定义头部)
-    char *post_data = "key1=val1&key2=val2";
+    char *post_data = "";
     struct evkeyvalq *post_headers = zmalloc(sizeof(struct evkeyvalq));
     TAILQ_INIT(post_headers);
     evhttp_add_header(post_headers, "X-Custom-Header", "MyValue");
     evhttp_add_header(post_headers, "Content-Type", "application/x-www-form-urlencoded"); // 通常POST需要设置
 
     ws_http_request_options post_options = {0};
-    post_options.method = WS_HTTP_POST;
-    post_options.url = "http://httpbin.org/post"; // 会返回POST的数据
+    post_options.method = WS_HTTP_GET;
+    post_options.url = "https://www.baidu.com"; // 会返回POST的数据
     post_options.body_data = post_data;
     post_options.body_len = strlen(post_data);
     post_options.headers = post_headers;
