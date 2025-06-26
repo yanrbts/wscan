@@ -28,8 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <crypt.h>
-
+#include <ctype.h> 
 
 char *ws_trim_whitespace(char *str) {
     char *end; 
@@ -47,7 +46,6 @@ char *ws_trim_whitespace(char *str) {
     *(end + 1) = 0; 
     return str;
 }
-
 
 int ws_strcasecmp(const char *s1, const char *s2) {
     if (s1 == s2) return 0;

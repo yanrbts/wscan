@@ -32,70 +32,85 @@
 #include <ctype.h> // For isspace, tolower
 #include <time.h> // For time()
 #include <event2/keyvalq_struct.h> // For struct evkeyvalq
+#include <event2/event.h>
+#include <event2/http.h>
+#include <event2/util.h>
+#include <event2/buffer.h>
 #include <ws_malloc.h>
 #include <ws_log.h>
 #include <ws_util.h>
 #include <ws_cookie.h>
 
-// Convert HTTP date string to time_t
-// Simplified parser, might not handle all RFC date formats robustly.
-// Consider using a more robust date parsing library if full RFC compliance is critical.
+// Month mapping table
+static int parse_month(const char *mon) {
+    static const char *months[] = {
+        "Jan","Feb","Mar","Apr","May","Jun",
+        "Jul","Aug","Sep","Oct","Nov","Dec"
+    };
+    for (int i = 0; i < 12; ++i) {
+        if (strcasecmp(mon, months[i]) == 0) return i;
+    }
+    return -1;
+}
+
+// Parse 2-digit year like '94' to 1994 or 2094
+static int parse_year_2digit(int y) {
+    return (y < 70) ? (2000 + y) : (1900 + y);
+}
+
+// Core parsing function
 static time_t ws_parse_http_date(const char *date_str) {
-    struct tm tm;
-    // Example format: "Wed, 09 Jun 2021 10:18:14 GMT"
-    // Using strptime for more robust parsing if available and desired.
-    // For simplicity, a basic sscanf or custom parser for common formats.
-    // A more robust solution might use libcurl's curl_getdate.
-    // For this example, let's assume a common RFC1123-like format.
-    // Example: "Wdy, DD Mon YYYY HH:MM:SS GMT"
-    char weekday[4], month[4], tz[4];
+    if (!date_str || !*date_str) return 0;
+
+    struct tm tm = {0};
+    char wkday[10], month[4], tz[4];
+    char tmp[40]; // scratch buffer
     int day, year, hour, min, sec;
-    char *s = (char*)date_str;
 
-    // Skip weekday and comma
-    while (*s && *s != ',') s++;
-    if (*s == ',') s++;
-    s = ws_trim_whitespace(s); // Trim space after comma
-
-    if (sscanf(s, "%d %3s %d %d:%d:%d %3s",
-               &day, month, &year, &hour, &min, &sec, tz) == 7) {
-        memset(&tm, 0, sizeof(tm));
+    // --- Try RFC 1123: "Sun, 06 Nov 1994 08:49:37 GMT" ---
+    if (sscanf(date_str, "%9[^,], %d %3s %d %d:%d:%d %3s",
+               wkday, &day, month, &year, &hour, &min, &sec, tz) == 8) {
+        int mon = parse_month(month);
+        if (mon < 0) return 0;
         tm.tm_mday = day;
+        tm.tm_mon = mon;
         tm.tm_year = year - 1900;
         tm.tm_hour = hour;
         tm.tm_min = min;
         tm.tm_sec = sec;
-
-        // Simplified month parsing
-        if (ws_strcasecmp(month, "Jan") == 0) tm.tm_mon = 0;
-        else if (ws_strcasecmp(month, "Feb") == 0) tm.tm_mon = 1;
-        else if (ws_strcasecmp(month, "Mar") == 0) tm.tm_mon = 2;
-        else if (ws_strcasecmp(month, "Apr") == 0) tm.tm_mon = 3;
-        else if (ws_strcasecmp(month, "May") == 0) tm.tm_mon = 4;
-        else if (ws_strcasecmp(month, "Jun") == 0) tm.tm_mon = 5;
-        else if (ws_strcasecmp(month, "Jul") == 0) tm.tm_mon = 6;
-        else if (ws_strcasecmp(month, "Aug") == 0) tm.tm_mon = 7;
-        else if (ws_strcasecmp(month, "Sep") == 0) tm.tm_mon = 8;
-        else if (ws_strcasecmp(month, "Oct") == 0) tm.tm_mon = 9;
-        else if (ws_strcasecmp(month, "Nov") == 0) tm.tm_mon = 10;
-        else if (ws_strcasecmp(month, "Dec") == 0) tm.tm_mon = 11;
-        else return 0; // Invalid month
-
-        // mktime assumes local time, we need gmtime/timegm for GMT/UTC dates.
-        // POSIX timegm is ideal, otherwise manual offset.
-        // For portability, we'll convert to UTC directly if possible.
-        // On most systems, setenv("TZ", "UTC", 1) then mktime will work, but that's global.
-        // Better: use gmtime/timegm or parse into components.
-        // For simplicity: convert to seconds since epoch, assuming GMT.
-        return timegm(&tm); // Requires _GNU_SOURCE or similar, or calculate manually.
-                            // If timegm not available, a portable workaround is needed.
-                            // For this example, assuming timegm is available or use UTC conversion logic.
-                            // If timegm isn't available, cross-platform date parsing is harder.
-                            // For production, consider a dedicated library or a robust hand-written parser.
+        return timegm(&tm); // UTC-safe
     }
-    return 0; // Failed to parse
-}
 
+    // --- Try RFC 850: "Sunday, 06-Nov-94 08:49:37 GMT" ---
+    if (sscanf(date_str, "%9[^,], %d-%3s-%d %d:%d:%d %3s",
+               wkday, &day, month, &year, &hour, &min, &sec, tz) == 8) {
+        int mon = parse_month(month);
+        if (mon < 0) return 0;
+        tm.tm_mday = day;
+        tm.tm_mon = mon;
+        tm.tm_year = parse_year_2digit(year) - 1900;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
+        tm.tm_sec = sec;
+        return timegm(&tm);
+    }
+
+    // --- Try ANSI C asctime(): "Sun Nov  6 08:49:37 1994" ---
+    if (sscanf(date_str, "%3s %3s %d %d:%d:%d %d",
+               wkday, month, &day, &hour, &min, &sec, &year) == 7) {
+        int mon = parse_month(month);
+        if (mon < 0) return 0;
+        tm.tm_mday = day;
+        tm.tm_mon = mon;
+        tm.tm_year = year - 1900;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
+        tm.tm_sec = sec;
+        return timegm(&tm);
+    }
+
+    return 0; // Unrecognized format
+}
 static void ws_cookie_free(ws_cookie *cookie) {
     if (cookie) {
         if (cookie->name) zfree(cookie->name);
@@ -201,328 +216,272 @@ void ws_cookie_jar_free(ws_cookie_jar *jar) {
     }
 }
 
-// Parses a single "Set-Cookie" header string and returns a ws_cookie struct.
-// Returns NULL on parsing error.
-static ws_cookie *parse_set_cookie_string(const char *cookie_str, const char *default_domain, const char *default_path) {
-    ws_cookie *new_cookie = zcalloc(sizeof(ws_cookie));
-    if (!new_cookie) {
+/**
+ * Parses a single "Set-Cookie" header string and returns a dynamically allocated ws_cookie struct.
+ * On failure (e.g. bad format, memory allocation error), returns NULL.
+ *
+ * @param cookie_str       The raw Set-Cookie header string, e.g. "SID=abc123; Path=/; HttpOnly".
+ * @param default_domain   The default domain to assign if no Domain attribute is specified.
+ * @param default_path     The default path to assign if no Path attribute is specified.
+ *
+ * @return A pointer to a heap-allocated ws_cookie struct, or NULL on error.
+ */
+static ws_cookie *parse_set_cookie_string(const char *cookie_str, 
+    const char *default_domain, const char *default_path)
+{
+    if (!cookie_str || !default_domain || !default_path) {
+        return NULL; // Invalid input
+    }
+
+    char *cookie_copy = NULL;
+    // Allocate and initialize a new ws_cookie struct
+    ws_cookie *cookie = zcalloc(sizeof(ws_cookie));
+    if (!cookie) {
         ws_log_error("Failed to allocate memory for new cookie.");
         return NULL;
     }
 
-    new_cookie->expires = 0; // Session cookie by default
-    new_cookie->secure = false;
-    new_cookie->httponly = false;
-    // Duplicate default domain and path. These might be overwritten by attributes in cookie_str.
-    new_cookie->domain = zstrdup(default_domain);
-    new_cookie->path = zstrdup(default_path);
-    if (!new_cookie->domain || !new_cookie->path) {
+    // Initialize default fields
+    cookie->expires = 0;         // 0 means session cookie
+    cookie->secure = false;      // By default not Secure
+    cookie->httponly = false;    // By default not HttpOnly
+
+    // Set default domain and path (can be overridden later)
+    if (!(cookie->domain = strdup(default_domain)) || !(cookie->path = strdup(default_path))) {
         ws_log_error("Failed to duplicate default domain/path for cookie.");
-        ws_cookie_free(new_cookie);
-        return NULL;
+        goto err;
     }
 
     // Create a mutable copy of the cookie string for parsing
-    char *cookie_copy = zstrdup(cookie_str);
+    cookie_copy = strdup(cookie_str);
     if (!cookie_copy) {
         ws_log_error("Failed to duplicate Set-Cookie string.");
-        ws_cookie_free(new_cookie);
-        return NULL;
+        goto err;
     }
 
-    char *token_start = cookie_copy;
-    char *token_end;
-
-    // Parse Name=Value (the first part)
-    token_end = strchr(token_start, ';');
-    char *name_value_pair;
-    if (token_end) {
-        *token_end = '\0';          // Null-terminate the name=value part
-        name_value_pair = token_start;
-        token_start = token_end + 1; // Move pointer to start of next attribute
-    } else {
-        name_value_pair = token_start;
-        token_start = NULL; // No more attributes after name=value
+    // --- Parse the first token: Name=Value pair ---
+    char *token = cookie_copy;
+    char *next_token = strchr(token, ';'); // Look for first semicolon to split
+    if (next_token) {
+        *next_token++ = '\0'; // Null-terminate the first part
     }
 
-    char *eq_pos = strchr(name_value_pair, '=');
-    if (!eq_pos) {
-        ws_log_warn("Invalid Set-Cookie: Missing '=' in name-value pair: %s", name_value_pair);
-        zfree(cookie_copy);
-        ws_cookie_free(new_cookie);
-        return NULL;
+    char *eq = strchr(token, '=');
+    if (!eq) {
+        // The first part must be name=value
+        ws_log_warn("Invalid Set-Cookie: Missing '=' in name-value pair: %s", token);
+        goto err;
     }
 
-    *eq_pos = '\0'; // Null-terminate the name part
-    new_cookie->name = zstrdup(ws_trim_whitespace(name_value_pair)); // Name
-    new_cookie->value = zstrdup(ws_trim_whitespace(eq_pos + 1));     // Value
-    if (!new_cookie->name || !new_cookie->value) {
+    *eq = '\0'; // Split into name and value
+    cookie->name = strdup(ws_trim_whitespace(token));       // Trim and copy name
+    cookie->value = strdup(ws_trim_whitespace(eq + 1));     // Trim and copy value
+    if (!cookie->name || !cookie->value) {
         ws_log_error("Failed to duplicate cookie name/value.");
-        zfree(cookie_copy);
-        ws_cookie_free(new_cookie);
-        return NULL;
+        goto err;
     }
 
-    // Parse other attributes (Domain, Path, Expires, Max-Age, Secure, HttpOnly)
-    while (token_start && *token_start) {
-        token_start = ws_trim_whitespace(token_start); // Trim leading whitespace for the attribute
-        token_end = strchr(token_start, ';');
-        char *attr_pair;
-        if (token_end) {
-            *token_end = '\0';
-            attr_pair = token_start;
-            token_start = token_end + 1;
-        } else {
-            attr_pair = token_start;
-            token_start = NULL; // Last attribute
+    // --- Parse the remaining attributes ---
+    token = next_token;
+    while (token && *token) {
+        token = ws_trim_whitespace(token);        // Remove leading spaces
+        next_token = strchr(token, ';');          // Look for next attribute
+        if (next_token) {
+            *next_token++ = '\0';                 // Null-terminate this attribute
         }
 
-        char *attr_eq_pos = strchr(attr_pair, '=');
-        char *attr_name;
+        // Split attribute into name=value or just flag
+        char *attr_eq = strchr(token, '=');
+        char *attr_name = token;
         char *attr_value = NULL;
-        if (attr_eq_pos) {
-            *attr_eq_pos = '\0';
-            attr_name = ws_trim_whitespace(attr_pair);
-            attr_value = ws_trim_whitespace(attr_eq_pos + 1);
-        } else {
-            attr_name = ws_trim_whitespace(attr_pair); // Flag attributes like "Secure" or "HttpOnly"
-        }
 
-        if (ws_strcasecmp(attr_name, "Domain") == 0 && attr_value) {
-            zfree(new_cookie->domain); // Free the default domain
-            // RFC 6265, Section 4.1.2.3: if domain starts with '.', remove it for storage
-            if (attr_value[0] == '.') {
-                new_cookie->domain = zstrdup(attr_value + 1);
-            } else {
-                new_cookie->domain = zstrdup(attr_value);
-            }
-        } else if (ws_strcasecmp(attr_name, "Path") == 0 && attr_value) {
-            zfree(new_cookie->path); // Free the default path
-            new_cookie->path = zstrdup(attr_value);
-        } else if (ws_strcasecmp(attr_name, "Expires") == 0 && attr_value) {
-            new_cookie->expires = ws_parse_http_date(attr_value);
-        } else if (ws_strcasecmp(attr_name, "Max-Age") == 0 && attr_value) {
-            long long max_age = strtoll(attr_value, NULL, 10); // Parse as long long
-            if (max_age >= 0) {
-                new_cookie->expires = time(NULL) + max_age; // Current time + max_age
-            } else {
-                // Max-Age=0 (or negative) means delete cookie immediately, set to past date.
-                new_cookie->expires = 1; // Any past time will work (e.g., epoch + 1 second)
-            }
-        } else if (ws_strcasecmp(attr_name, "Secure") == 0) {
-            new_cookie->secure = true;
-        } else if (ws_strcasecmp(attr_name, "HttpOnly") == 0) {
-            new_cookie->httponly = true;
+        if (attr_eq) {
+            *attr_eq = '\0';                      // Split attribute name and value
+            attr_value = ws_trim_whitespace(attr_eq + 1);
         }
-        // Ignore other unknown attributes
+        attr_name = ws_trim_whitespace(attr_name);
+
+        // Handle standard cookie attributes (case-insensitive per RFC)
+        if (ws_strcasecmp(attr_name, "Domain") == 0 && attr_value) {
+            // Domain attribute: override default domain
+            zfree(cookie->domain);
+            // Per RFC 6265 §4.1.2.3: domain starting with '.' is allowed, but must be stored without it
+            cookie->domain = strdup(attr_value[0] == '.' ? attr_value + 1 : attr_value);
+        } else if (ws_strcasecmp(attr_name, "Path") == 0 && attr_value) {
+            // Path attribute: override default path
+            zfree(cookie->path);
+            cookie->path = strdup(attr_value);
+        } else if (ws_strcasecmp(attr_name, "Expires") == 0 && attr_value) {
+            // Expires attribute: parse HTTP date string into epoch seconds
+            cookie->expires = ws_parse_http_date(attr_value);
+        } else if (ws_strcasecmp(attr_name, "Max-Age") == 0 && attr_value) {
+            // Max-Age: relative expiry in seconds from now
+            long long max_age = strtoll(attr_value, NULL, 10);
+            cookie->expires = (max_age >= 0) ? time(NULL) + max_age : 1; // If <=0, set to "past"
+        } else if (ws_strcasecmp(attr_name, "Secure") == 0) {
+            // Secure flag: cookie should only be sent over HTTPS
+            cookie->secure = true;
+        } else if (ws_strcasecmp(attr_name, "HttpOnly") == 0) {
+            // HttpOnly flag: cookie not accessible to JavaScript
+            cookie->httponly = true;
+        }
+        // Unknown attributes are ignored (e.g. SameSite)
+
+        token = next_token;
     }
 
-    zfree(cookie_copy); // Free the mutable copy
-    return new_cookie;
+    // Free the temporary mutable copy
+    zfree(cookie_copy);
+    return cookie;
+
+err:
+    if (cookie_copy) zfree(cookie_copy);
+    if (cookie) ws_cookie_free(cookie);
+    return NULL;
 }
 
-/**
- * @brief 从 HTTP 响应头中解析 "Set-Cookie" 头部，并添加到 Cookie Jar。
- */
+static bool validate_cookie_domain(ws_cookie *cookie, const char *request_host) {
+    if (!cookie->domain) {
+        cookie->domain = strdup(request_host);
+        return cookie->domain != NULL;
+    }
+
+    size_t hlen = strlen(request_host);
+    size_t dlen = strlen(cookie->domain);
+    if (hlen < dlen)
+        return false;
+
+    if (ws_strcasecmp(request_host, cookie->domain) == 0)
+        return true;
+
+    if (hlen > dlen &&
+        request_host[hlen - dlen - 1] == '.' &&
+        ws_strcasecmp(request_host + hlen - dlen, cookie->domain) == 0)
+        return true;
+
+    ws_log_warn("Invalid cookie domain '%s' for host '%s'", cookie->domain, request_host);
+    return false;
+}
+
+static ws_domain_cookies *get_or_create_domain_entry(ws_cookie_jar *jar, const char *domain) {
+    ws_domain_cookies key = { .domain = (char *)domain };
+    ws_domain_cookies *entry = (ws_domain_cookies *)rbFind(jar->domain_map, &key);
+    if (entry) return entry;
+
+    entry = zmalloc(sizeof(ws_domain_cookies));
+    if (!entry) return NULL;
+
+    entry->domain = strdup(domain);
+    if (!entry->domain) {
+        zfree(entry);
+        return NULL;
+    }
+
+    entry->path_cookies = rbCreate(ws_cookie_path_item_cmp, NULL);
+    if (!entry->path_cookies) {
+        zfree(entry->domain);
+        zfree(entry);
+        return NULL;
+    }
+
+    if (!rbProbe(jar->domain_map, entry)) {
+        rbDestroy(entry->path_cookies, NULL);
+        zfree(entry->domain);
+        zfree(entry);
+        return NULL;
+    }
+
+    return entry;
+}
+
+static ws_path_map_item *get_or_create_path_entry(ws_domain_cookies *domain_entry, const char *path) {
+    ws_path_map_item key = { .path_key = (char *)path };
+    ws_path_map_item *entry = (ws_path_map_item *)rbFind(domain_entry->path_cookies, &key);
+    if (entry) return entry;
+
+    entry = zmalloc(sizeof(ws_path_map_item));
+    if (!entry) return NULL;
+
+    entry->path_key = strdup(path);
+    if (!entry->path_key) {
+        zfree(entry);
+        return NULL;
+    }
+
+    entry->cookie_list_head = zmalloc(sizeof(struct ws_cookie_list_head));
+    if (!entry->cookie_list_head) {
+        zfree(entry->path_key);
+        zfree(entry);
+        return NULL;
+    }
+
+    TAILQ_INIT(entry->cookie_list_head);
+
+    if (!rbProbe(domain_entry->path_cookies, entry)) {
+        zfree(entry->cookie_list_head);
+        zfree(entry->path_key);
+        zfree(entry);
+        return NULL;
+    }
+
+    return entry;
+}
+
+static void insert_or_replace_cookie(struct ws_cookie_list_head *list, ws_cookie *cookie) {
+    ws_cookie *existing;
+    TAILQ_FOREACH(existing, list, next) {
+        if (ws_strcasecmp(existing->name, cookie->name) == 0) {
+            TAILQ_REMOVE(list, existing, next);
+            ws_cookie_free(existing);
+            break;
+        }
+    }
+    TAILQ_INSERT_TAIL(list, cookie, next);
+}
+
 void ws_cookie_jar_parse_set_cookie_headers(ws_cookie_jar *jar,
                                              const char *request_host,
                                              const char *request_path,
                                              bool is_https,
-                                             struct evkeyvalq *set_cookie_headers) {
-    if (!jar || !request_host || !request_path || !set_cookie_headers) {
+                                             struct evkeyvalq *set_cookie_headers)
+{
+    if (!jar || !request_host || !request_path || !set_cookie_headers)
         return;
-    }
 
-    struct evkeyval *set_cookie_header;
-    // Iterate through each "Set-Cookie" header in the response
-    TAILQ_FOREACH(set_cookie_header, set_cookie_headers, next) {
-        // Parse the raw Set-Cookie string into a ws_cookie struct
-        ws_cookie *new_cookie = parse_set_cookie_string(set_cookie_header->value, request_host, request_path);
-        if (!new_cookie) {
-            ws_log_warn("Failed to parse Set-Cookie header: %s", set_cookie_header->value);
+    struct evkeyval *header;
+    TAILQ_FOREACH(header, set_cookie_headers, next) {
+        ws_cookie *cookie = parse_set_cookie_string(header->value, request_host, request_path);
+        if (!cookie) {
+            ws_log_warn("Failed to parse Set-Cookie: %s", header->value);
             continue;
         }
 
-        // --- Apply Cookie Rules (RFC 6265, Section 5.3) ---
-
-        // 1. Domain Validation:
-        //    If the Domain attribute is present:
-        //    - The request-host must "domain-match" the Domain attribute.
-        //    - If it's a "public suffix" (e.g., .com, .co.uk), it's more complex, but we'll use a simplified check.
-        //    - Our stored domain doesn't have a leading dot, so "example.com" should match "example.com" and "www.example.com".
-        if (new_cookie->domain) {
-            size_t req_host_len = strlen(request_host);
-            size_t cookie_domain_len = strlen(new_cookie->domain);
-
-            // Basic check: request host must be at least as long as cookie domain
-            if (req_host_len < cookie_domain_len) {
-                ws_log_warn("Set-Cookie domain '%s' too long for request host '%s'. Dropping.",
-                            new_cookie->domain, request_host);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-
-            // Check for exact match or subdomain match (e.g., "www.example.com" vs "example.com")
-            // A subdomain match requires the request host to end with ".cookie_domain" or directly match.
-            // Example: request_host="www.example.com", new_cookie->domain="example.com"
-            // req_host_len - cookie_domain_len = 15 - 11 = 4
-            // request_host[4 - 1] = request_host[3] = '.'
-            // strcasecmp("example.com", "example.com") == 0
-            if (ws_strcasecmp(request_host, new_cookie->domain) != 0 && // Not an exact match
-                !(req_host_len > cookie_domain_len &&                   // Is longer
-                  request_host[req_host_len - cookie_domain_len - 1] == '.' && // Preceded by a dot
-                  ws_strcasecmp(request_host + req_len - cookie_domain_len, new_cookie->domain) == 0)) {
-                ws_log_warn("Set-Cookie domain '%s' does not match request host '%s'. Dropping.",
-                            new_cookie->domain, request_host);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-        } else {
-            // If Domain attribute is NOT specified, it defaults to the request-host.
-            // The request-host is always a valid domain for the cookie.
-            zfree(new_cookie->domain); // Free the default domain duplicated in parse_set_cookie_string
-            new_cookie->domain = zstrdup(request_host); // Set to the actual request host
-            if (!new_cookie->domain) {
-                ws_log_error("Failed to duplicate request host for cookie domain.");
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-        }
-
-        // 2. Secure Flag Validation:
-        //    If the Secure attribute is present, the cookie MUST NOT be stored if the request was made over HTTP.
-        if (new_cookie->secure && !is_https) {
-            ws_log_warn("Received Secure cookie '%s' over HTTP. Dropping.", new_cookie->name);
-            ws_cookie_free(new_cookie);
+        // Validate domain
+        if (!validate_cookie_domain(cookie, request_host)) {
+            ws_cookie_free(cookie);
             continue;
         }
 
-        ws_log_debug("Storing cookie: %s=%s; Domain=%s; Path=%s; Expires=%ld; Secure=%d; HttpOnly=%d",
-                     new_cookie->name, new_cookie->value, new_cookie->domain, new_cookie->path,
-                     new_cookie->expires, new_cookie->secure, new_cookie->httponly);
+        // Enforce Secure attribute
+        if (cookie->secure && !is_https) {
+            ws_log_warn("Dropping Secure cookie '%s' from HTTP", cookie->name);
+            ws_cookie_free(cookie);
+            continue;
+        }
 
-        // --- Store the cookie in the Cookie Jar (RBTree nested structure) ---
-
-        // Step A: Find or create the domain entry in jar->domain_map
-        // Create a temporary search item for the domain RBTree lookup.
-        ws_domain_cookies search_domain_item;
-        search_domain_item.domain = new_cookie->domain; // Point to new_cookie's domain for comparison
-
-        ws_domain_cookies *domain_entry = (ws_domain_cookies *)rbFind(jar->domain_map, &search_domain_item);
-
+        ws_domain_cookies *domain_entry = get_or_create_domain_entry(jar, cookie->domain);
         if (!domain_entry) {
-            // Domain entry does not exist, so create a new one.
-            domain_entry = zmalloc(sizeof(ws_domain_cookies));
-            if (!domain_entry) {
-                ws_log_error("Failed to allocate ws_domain_cookies.");
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            domain_entry->domain = zstrdup(new_cookie->domain); // Duplicate domain string for storage
-            if (!domain_entry->domain) {
-                ws_log_error("Failed to duplicate domain string for new domain entry.");
-                zfree(domain_entry);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            // Create the nested path_cookies RBTree for this new domain entry.
-            // It uses ws_cookie_path_item_cmp for comparison and ws_cookie_path_item_free for item cleanup.
-            domain_entry->path_cookies = rbCreate(ws_cookie_path_item_cmp, NULL, ws_cookie_path_item_free);
-            if (!domain_entry->path_cookies) {
-                ws_log_error("Failed to create path_cookies RBTree for new domain.");
-                zfree(domain_entry->domain);
-                zfree(domain_entry);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
+            ws_cookie_free(cookie);
+            continue;
+        }
 
-            // Probe (insert) the new domain_entry into the main domain_map RBTree.
-            // rbProbe returns a void** to the location where the item should be placed.
-            void **probe_res_ptr = rbProbe(jar->domain_map, domain_entry);
-            if (!probe_res_ptr) { // rbProbe should not fail if memory is available and item is unique.
-                ws_log_error("Failed to probe new domain_cookies into map.");
-                // Clean up the newly allocated domain_entry and its nested tree
-                rbDestroy(domain_entry->path_cookies, NULL);
-                zfree(domain_entry->domain);
-                zfree(domain_entry);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            // If the item was new, *probe_res_ptr will be NULL, and we assign it.
-            // If it was already present, *probe_res_ptr would point to the existing item,
-            // but our logic ensures we only call probe if rbFind returned NULL.
-            *probe_res_ptr = domain_entry; // Store the newly created domain_entry
-        } // If domain_entry already exists, we simply proceed using it.
-
-        // Step B: Find or create the path entry within the domain's path_cookies RBTree
-        // Create a temporary search item for the path RBTree lookup.
-        ws_path_map_item search_path_item;
-        search_path_item.path_key = new_cookie->path; // Point to new_cookie's path for comparison
-
-        ws_path_map_item *path_entry = (ws_path_map_item *)rbFind(domain_entry->path_cookies, &search_path_item);
-
-        struct ws_cookie_list_head *cookie_list;
+        ws_path_map_item *path_entry = get_or_create_path_entry(domain_entry, cookie->path);
         if (!path_entry) {
-            // Path entry does not exist, create a new one.
-            path_entry = zmalloc(sizeof(ws_path_map_item));
-            if (!path_entry) {
-                ws_log_error("Failed to allocate ws_path_map_item.");
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            path_entry->path_key = zstrdup(new_cookie->path); // Duplicate path string for storage
-            if (!path_entry->path_key) {
-                ws_log_error("Failed to duplicate path string for new path entry.");
-                zfree(path_entry);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            // Allocate and initialize the TAILQ head for this path.
-            cookie_list = zmalloc(sizeof(struct ws_cookie_list_head));
-            if (!cookie_list) {
-                ws_log_error("Failed to allocate cookie_list_head.");
-                zfree(path_entry->path_key);
-                zfree(path_entry);
-                ws_cookie_free(new_cookie);
-                continue;
-            }
-            TAILQ_INIT(cookie_list); // Initialize the TAILQ
-            path_entry->cookie_list_head = cookie_list;
-
-            // Probe (insert) the new path_entry into the domain's path_cookies RBTree.
-            void **path_probe_res_ptr = rbProbe(domain_entry->path_cookies, path_entry);
-            if (!path_probe_res_ptr) {
-                 ws_log_error("Failed to probe new path_map_item into path map.");
-                 zfree(path_entry->cookie_list_head);
-                 zfree(path_entry->path_key);
-                 zfree(path_entry);
-                 ws_cookie_free(new_cookie);
-                 continue;
-            }
-            *path_probe_res_ptr = path_entry; // Store the newly created path_entry
-        } else {
-            cookie_list = path_entry->cookie_list_head; // Use the existing TAILQ
+            ws_cookie_free(cookie);
+            continue;
         }
 
-        // Step C: Add/Replace the new_cookie in the appropriate cookie_list (TAILQ)
-        ws_cookie *existing_cookie;
-        bool replaced = false;
-        // Iterate safely to find and replace if a cookie with the same name exists for this domain/path.
-        TAILQ_FOREACH(existing_cookie, cookie_list, next) {
-            if (ws_strcasecmp(existing_cookie->name, new_cookie->name) == 0) {
-                ws_log_debug("Replacing existing cookie '%s' for Domain=%s, Path=%s.",
-                             existing_cookie->name, existing_cookie->domain, existing_cookie->path);
-                TAILQ_REMOVE(cookie_list, existing_cookie, next); // Remove the old cookie
-                ws_cookie_free(existing_cookie);                   // Free its memory
-                TAILQ_INSERT_TAIL(cookie_list, new_cookie, next); // Add the new cookie
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            // No existing cookie with the same name, simply add the new cookie to the list.
-            TAILQ_INSERT_TAIL(cookie_list, new_cookie, next);
-        }
+        insert_or_replace_cookie(path_entry->cookie_list_head, cookie);
     }
 }
 
@@ -660,7 +619,7 @@ char *ws_cookie_jar_get_cookie_header_string(ws_cookie_jar *jar,
     }
 
     // Convert the evbuffer content to a dynamically allocated string.
-    char *cookie_header_str = zstrdup((const char *)evbuffer_pullup(cookie_buffer, -1));
+    char *cookie_header_str = strdup((const char *)evbuffer_pullup(cookie_buffer, -1));
     evbuffer_free(cookie_buffer); // Free the evbuffer
 
     return cookie_header_str;

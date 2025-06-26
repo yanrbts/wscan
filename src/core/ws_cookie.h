@@ -31,9 +31,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <time.h> // For time_t
+#include <time.h>
 #include <sys/queue.h>
-#include <event2/keyvalq_struct.h> // For struct evkeyvalq (for Set-Cookie headers)
+#include <event2/keyvalq_struct.h>
 #include <ws_rbtree.h>
 
 typedef struct ws_cookie {
@@ -50,29 +50,29 @@ typedef struct ws_cookie {
 // A list of ws_cookie for a specific domain and path
 TAILQ_HEAD(ws_cookie_list_head, ws_cookie);
 
-// --- ws_path_map_item: Item stored in the 'path_cookies' RBTree ---
+// ws_path_map_item: Item stored in the 'path_cookies' RBTree
 // This struct will serve as the actual item (value) stored in the RBTree.
 // It contains the path string (key) and a pointer to the TAILQ of cookies.
 typedef struct ws_path_map_item {
-    char *path_key; // The path string, serves as the key for comparison in path_cookies RBTree
+    char *path_key;
     struct ws_cookie_list_head *cookie_list_head; // The TAILQ of cookies associated with this path
 } ws_path_map_item;
 
 /* 
- * --- Per-Domain Cookie Storage ---
+ * Per-Domain Cookie Storage
  * RBTree: Key = char* (path string), Value = ws_cookie_list_head*
  */
 typedef struct ws_domain_cookies {
     char *domain;
-    rbTable *path_cookies; // Tree of paths, each pointing to a list of cookies
+    rbTable *path_cookies; 
 } ws_domain_cookies;
 
 /* 
- * --- Main Cookie Jar Structure ---
+ * Main Cookie Jar Structure
  * RBTree: Key = char* (domain string), Value = ws_domain_cookies* 
  */
 typedef struct ws_cookie_jar {
-    rbTable *domain_map; // Top-level tree mapping domains to their cookie storage
+    rbTable *domain_map;
 } ws_cookie_jar;
 
 /**
