@@ -107,30 +107,31 @@ ws_event_base *ws_event_new(void) {
     ws_event_base *we = zmalloc(sizeof(ws_event_base));
     if (!we) {
         ws_log_error("Failed to allocate memory for ws_event_base.");
-        return NULL;
+        goto err;
     }
 
     we->base = event_base_new();
     if (!we->base) {
         ws_log_error("Failed to create libevent event_base.");
-        zfree(we);
-        return NULL;
+        goto err;
     }
 
     // **Initialize OpenSSL library and create SSL_CTX**
     if (ws_ssl_init_libs() != 0) {
         ws_log_error("Failed to initialize OpenSSL libraries.");
-        event_base_free(we->base);
-        zfree(we);
-        return NULL;
+        goto err;
     }
+
     we->ssl_ctx = ws_ssl_client_ctx_new();
     if (!we->ssl_ctx) {
         ws_log_error("Failed to create SSL_CTX for ws_event_base.");
-        ws_ssl_cleanup_libs(); // Clean up OpenSSL libraries
-        event_base_free(we->base);
-        zfree(we);
-        return NULL;
+        goto err;
+    }
+
+    we->cookie_jar = ws_cookie_jar_new();
+    if (!we->cookie_jar) {
+        ws_log_error("Failed to create cookie jar.");
+        goto err;
     }
 
     we->next_event_id = 1; // ID starts from 1
@@ -141,14 +142,22 @@ ws_event_base *ws_event_new(void) {
     we->events = rbCreate(ws_rb_comparison_func, NULL);
     if (!we->events) {
         ws_log_error("Failed to create red-black tree for events.");
-        ws_ssl_free_ctx(we->ssl_ctx); // Clean up SSL_CTX
-        ws_ssl_cleanup_libs();        // Clean up OpenSSL libraries
-        event_base_free(we->base);
-        zfree(we);
-        return NULL;
+        goto err;
     }
 
     return we;
+
+err:
+    if (we) {
+        if (we->ssl_ctx) {
+            ws_ssl_free_ctx(we->ssl_ctx); // Clean up SSL_CTX
+            ws_ssl_cleanup_libs();        // Clean up OpenSSL libraries
+        }
+        if (we->base) event_base_free(we->base);
+        if (we->cookie_jar) zfree(we->cookie_jar);
+        zfree(we);
+    }
+    return NULL;
 }
 
 /**
@@ -166,6 +175,10 @@ void ws_event_free(ws_event_base *we) {
             ws_ssl_free_ctx(we->ssl_ctx);
         }
         ws_ssl_cleanup_libs();
+
+        if (we->cookie_jar) {
+            ws_cookie_jar_free(we->cookie_jar);
+        }
 
         zfree(we);
     }

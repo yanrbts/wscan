@@ -36,6 +36,7 @@
 #include <event2/keyvalq_struct.h> // For struct evkeyvalq
 #include <ws_rbtree.h>
 #include <ws_ssl.h>
+#include <ws_cookie.h>
 
 /**
  * @brief HTTP request completion callback function type.
@@ -69,6 +70,7 @@ typedef struct ws_event_base {
     int failed_requests;
     rbTable *events; // Red-black tree to manage events
     SSL_CTX *ssl_ctx;
+    ws_cookie_jar *cookie_jar;
 } ws_event_base;
 
 // Event handle structure
@@ -91,6 +93,9 @@ typedef struct ws_event_handle {
             // Its lifecycle is managed by libevent, or by a connection pool if needed
             ws_event_http_cb callback;
             void *internal_ctx; // Pointer to the internal HTTP request context
+            const char *request_host;
+            const char *request_path;
+            bool is_https_request; 
         } http;
         /* Time event */
         struct {

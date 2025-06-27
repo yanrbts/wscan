@@ -39,6 +39,7 @@
 #include <ws_http.h>
 #include <ws_ssl.h>
 #include <ws_util.h>
+#include <ws_cookie.h>
 
 // Internal context for HTTP requests
 typedef struct ws_http_internal_context {
@@ -50,6 +51,9 @@ typedef struct ws_http_internal_context {
     void *user_data;                    // 用户参数
     struct evbuffer *response_buffer;   // 响应体缓冲
     SSL *ssl_obj;                       // HTTPS连接的SSL对象 (now specifically the SSL* created per connection)
+    char *original_request_host;        // 原始请求的主机名副本 (zstrdup 复制，需要释放)
+    char *original_request_path;        // 原始请求的路径副本 (zstrdup 复制，需要释放)
+    bool original_is_https;             // 原始请求是否为HTTPS
 } ws_http_internal_context;
 
 // Internal function: Cleans up the HTTP request context
@@ -65,6 +69,8 @@ static void cleanup_http_context(ws_http_internal_context *ctx) {
         evbuffer_free(ctx->response_buffer);
         ctx->response_buffer = NULL;
     }
+    zfree(ctx->original_request_host);
+    zfree(ctx->original_request_path);
     // req and conn are implicitly freed by libevent upon request completion/error,
     // or by evhttp_connection_free/evhttp_request_free in error paths where they are not yet owned by libevent.
     // The SSL* object (ctx->ssl_obj) is managed by the bufferevent (BEV_OPT_CLOSE_ON_FREE)
@@ -95,6 +101,7 @@ static void http_request_timeout_cb(evutil_socket_t fd, short what, void *arg) {
     // Ensure this handle is removed from ws_event_base's red-black tree
     if (ctx->handle) {
         ws_event_del(ctx->handle); // This will trigger ws_rb_item_func to free ws_event_handle
+        ctx->handle = NULL;
     }
     // Free internal context
     cleanup_http_context(ctx);
@@ -137,6 +144,17 @@ static void ws_event_internal_http_cb(struct evhttp_request *req, void *arg) {
             ws_log_info("HTTP request ID %lld to %s completed with status %d.",
                          ctx->handle->id, evhttp_request_get_uri(req), status_code);
         }
+
+        if (ctx->handle->base->cookie_jar && req) {
+            struct evkeyvalq *response_headers = evhttp_request_get_input_headers(req);
+            ws_cookie_jar_parse_set_cookie_headers(
+                ctx->handle->base->cookie_jar,
+                ctx->original_request_host, 
+                ctx->original_request_path, 
+                ctx->original_is_https,
+                response_headers
+            );
+        }
     } else {
         // Request failed, e.g., connection error, DNS resolution failure
         ws_log_error("HTTP request ID %lld failed (no response or connection error).", ctx->handle->id);
@@ -170,7 +188,11 @@ static void ws_event_internal_http_cb(struct evhttp_request *req, void *arg) {
  */
 static void setup_http_request_headers(struct evhttp_request *req,
                                        const ws_http_request_options *options,
-                                       const char *host) {
+                                       const char *host,
+                                       ws_cookie_jar *cookie_jar,
+                                       const char *request_host,
+                                       const char *request_path,
+                                       bool is_https) {
     // Get the output headers map for the request
     struct evkeyvalq *output_headers = evhttp_request_get_output_headers(req);
 
@@ -197,6 +219,27 @@ static void setup_http_request_headers(struct evhttp_request *req,
         && options->body_data && options->body_len > 0) {
         if (!evhttp_find_header(output_headers, "Content-Type")) {
             evhttp_add_header(output_headers, "Content-Type", "application/x-www-form-urlencoded");
+        }
+    }
+
+    if (cookie_jar) {
+        char *cookie_header_str = ws_cookie_jar_get_cookie_header_string(
+                                    cookie_jar,
+                                    request_host,
+                                    request_path,
+                                    is_https);
+        if (cookie_header_str) {
+            // Only add if there are applicable cookies and it's not already set
+            if (!evhttp_find_header(output_headers, "Cookie")) {
+                ws_log_warn("Not find Cookie of headers, Use saved cookies: %s", cookie_header_str);
+                evhttp_add_header(output_headers, "Cookie", cookie_header_str);
+            } else {
+                 // If a Cookie header already exists (e.g., from custom headers),
+                 // you might need to merge them, but for simplicity, we'll just log and skip for now.
+                 // A more robust implementation would parse existing Cookie header and merge.
+                 ws_log_warn("Custom 'Cookie' header already present, not adding cookies from jar.");
+            }
+            zfree(cookie_header_str);
         }
     }
 }
@@ -267,6 +310,13 @@ ws_event_handle *ws_event_http_request(ws_event_base *we,
     // Initialize internal_ctx->ssl_obj to NULL to prevent attempts to free
     // an uncreated SSL object in error paths.
     internal_ctx->ssl_obj = NULL; 
+    internal_ctx->original_request_host = strdup(host);
+    internal_ctx->original_request_path = strdup(path && strlen(path) > 0 ? path : "/"); // Default to "/" if path is empty
+    internal_ctx->original_is_https = (scheme && strcasecmp(scheme, "https") == 0);
+    if (!internal_ctx->original_request_host || !internal_ctx->original_request_path) {
+        ws_log_error("Failed to duplicate original host/path for internal context.");
+        goto err_internal_ctx; // This will clean up original_request_host if duplicated
+    }
 
     h->id = we->next_event_id++;
     h->type = WS_EVENT_HTTP;
@@ -274,6 +324,9 @@ ws_event_handle *ws_event_http_request(ws_event_base *we,
     h->http.callback = callback;
     h->arg = arg;
     h->http.internal_ctx = internal_ctx;
+    h->http.request_host = internal_ctx->original_request_host; // Point to the duplicated string
+    h->http.request_path = internal_ctx->original_request_path; // Point to the duplicated string
+    h->http.is_https_request = internal_ctx->original_is_https;
 
     internal_ctx->handle = h;
     internal_ctx->callback = callback;
@@ -285,7 +338,7 @@ ws_event_handle *ws_event_http_request(ws_event_base *we,
     }
 
     // **HTTPS connection handling**
-    if (scheme && strcmp(scheme, "https") == 0) {
+    if (internal_ctx->original_is_https) {
         if (!we->ssl_ctx) {
             ws_log_error("SSL_CTX is not initialized for HTTPS request to %s. Aborting.", options->url);
             goto err_response_buffer;
@@ -356,7 +409,11 @@ ws_event_handle *ws_event_http_request(ws_event_base *we,
         }
     }
 
-    setup_http_request_headers(req, options, host);
+    setup_http_request_headers(req, options, host,
+                               we->cookie_jar,
+                               internal_ctx->original_request_host, 
+                               internal_ctx->original_request_path,
+                               internal_ctx->original_is_https);
 
     // Handle POST/PUT data
     if ((options->method == WS_HTTP_POST || options->method == WS_HTTP_PUT)
@@ -398,19 +455,31 @@ ws_event_handle *ws_event_http_request(ws_event_base *we,
     return h;
 
 err_req:
-    if (req) evhttp_request_free(req); // Only if failed before evhttp_make_request took ownership
+    if (req) {
+        evhttp_request_free(req);
+        internal_ctx->req = NULL;
+    }
 err_conn:
-    if (conn) evhttp_connection_free(conn); // Only if failed before conn was associated with req
+    if (conn) {
+        evhttp_connection_free(conn);
+        internal_ctx->conn = NULL;
+    }
 err_ssl_obj_or_response_buffer: 
     if (internal_ctx && internal_ctx->ssl_obj) {
         // If ssl_obj was created but not yet taken ownership by libevent, free it here.
         SSL_free(internal_ctx->ssl_obj);
+        internal_ctx->ssl_obj = NULL;
     }
 err_response_buffer:
-    if (internal_ctx && internal_ctx->response_buffer)
+    if (internal_ctx && internal_ctx->response_buffer){
         evbuffer_free(internal_ctx->response_buffer);
+        internal_ctx->response_buffer = NULL;
+    }   
 err_internal_ctx:
-    if (internal_ctx) zfree(internal_ctx);
+    if (internal_ctx) {
+        cleanup_http_context(internal_ctx); 
+        internal_ctx = NULL;
+    }
 err_handle:
     if (h) zfree(h);
 err_uri:

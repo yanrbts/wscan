@@ -41,6 +41,14 @@
 #include <ws_util.h>
 #include <ws_cookie.h>
 
+#ifndef TAILQ_FOREACH_SAFE
+#define TAILQ_FOREACH_SAFE(var, head, field, tvar)                     \
+    for ((var) = TAILQ_FIRST((head));                                  \
+         (var) && ((tvar) = TAILQ_NEXT((var), field), 1);              \
+         (var) = (tvar))
+#endif
+
+
 // Month mapping table
 static int parse_month(const char *mon) {
     static const char *months[] = {
@@ -450,6 +458,10 @@ void ws_cookie_jar_parse_set_cookie_headers(ws_cookie_jar *jar,
 
     struct evkeyval *header;
     TAILQ_FOREACH(header, set_cookie_headers, next) {
+        if (strcasecmp(header->key, "Set-Cookie") != 0) {
+            continue; // 跳过非 Set-Cookie 头部
+        }
+
         ws_cookie *cookie = parse_set_cookie_string(header->value, request_host, request_path);
         if (!cookie) {
             ws_log_warn("Failed to parse Set-Cookie: %s", header->value);
@@ -482,6 +494,9 @@ void ws_cookie_jar_parse_set_cookie_headers(ws_cookie_jar *jar,
         }
 
         insert_or_replace_cookie(path_entry->cookie_list_head, cookie);
+
+        ws_log_debug("Successfully added/updated cookie: %s=%s for domain %s, path %s",
+                     cookie->name, cookie->value, cookie->domain, cookie->path);
     }
 }
 
@@ -552,17 +567,14 @@ char *ws_cookie_jar_get_cookie_header_string(ws_cookie_jar *jar,
         return NULL;
     }
 
-    struct evbuffer *cookie_buffer = evbuffer_new(); // Use evbuffer to build the cookie string efficiently
+    struct evbuffer *cookie_buffer = evbuffer_new();
     if (!cookie_buffer) {
         ws_log_error("Failed to create evbuffer for cookie header string.");
         return NULL;
     }
 
-    time_t current_time = time(NULL); // Get current time for expiration checks
-
-    // --- Prepare for domain matching and traversal ---
-    ws_domain_cookies search_domain_item; // Temporary item for rbFind
-    rbIter domain_iter;                   // Iterator for main domain_map
+    time_t current_time = time(NULL);
+    rbIter domain_iter;
     rbIterInit(&domain_iter, jar->domain_map);
 
     // Iterate through domains in the main domain_map.
@@ -571,56 +583,51 @@ char *ws_cookie_jar_get_cookie_header_string(ws_cookie_jar *jar,
          domain_item != NULL;
          domain_item = (ws_domain_cookies *)rbIterNext(&domain_iter))
     {
-        if (is_domain_match(request_host, domain_item->domain)) {
-            // Found a matching domain. Now iterate its nested path_cookies RBTree.
-            rbIter path_iter; // Iterator for nested path_cookies tree
-            rbIterInit(&path_iter, domain_item->path_cookies);
+        if (!is_domain_match(request_host, domain_item->domain))
+            continue;
 
-            for (ws_path_map_item *path_item = (ws_path_map_item *)rbIterFirst(&path_iter, domain_item->path_cookies);
-                 path_item != NULL;
-                 path_item = (ws_path_map_item *)rbIterNext(&path_iter))
-            {
-                const char *cookie_path_key = path_item->path_key;                 // The path string
-                struct ws_cookie_list_head *cookie_list = path_item->cookie_list_head; // The TAILQ of cookies
+        // Found a matching domain. Now iterate its nested path_cookies RBTree.
+        rbIter path_iter; 
+        rbIterInit(&path_iter, domain_item->path_cookies);
 
-                // Check if the request path matches the cookie's path
-                if (is_path_match(request_path, cookie_path_key)) {
-                    ws_cookie *cookie;
-                    // Iterate safely through the cookie list.
-                    TAILQ_FOREACH(cookie, cookie_list, next) {
-                        // Check expiration: If expires > 0 and in the past, remove and skip.
-                        if (cookie->expires > 0 && cookie->expires < current_time) {
-                            ws_log_debug("Expired cookie found: %s. Removing.", cookie->name);
-                            TAILQ_REMOVE(cookie_list, cookie, next); // Remove from list
-                            ws_cookie_free(cookie);                   // Free cookie's memory
-                            continue; // Go to the next cookie in the list
-                        }
+        for (ws_path_map_item *path_item = (ws_path_map_item *)rbIterFirst(&path_iter, domain_item->path_cookies);
+                path_item != NULL;
+                path_item = (ws_path_map_item *)rbIterNext(&path_iter))
+        {
+            if (!is_path_match(request_path, path_item->path_key))
+                continue;
 
-                        // Check secure flag: If cookie is secure and request is HTTP, skip.
-                        if (cookie->secure && !is_https) {
-                            continue; // Do not send secure cookie over non-HTTPS connection
-                        }
-
-                        // Append the cookie to the buffer in "name=value" format.
-                        if (evbuffer_get_length(cookie_buffer) > 0) {
-                            evbuffer_add_printf(cookie_buffer, "; "); // Add separator if not the first cookie
-                        }
-                        evbuffer_add_printf(cookie_buffer, "%s=%s", cookie->name, cookie->value);
-                    }
+            ws_cookie *cookie, *next_cookie;
+            TAILQ_FOREACH_SAFE(cookie, path_item->cookie_list_head, next, next_cookie) {
+                // Expired cookie
+                if (cookie->expires > 0 && cookie->expires < current_time) {
+                    ws_log_debug("Expired cookie: %s. Removing.", cookie->name);
+                    TAILQ_REMOVE(path_item->cookie_list_head, cookie, next);
+                    ws_cookie_free(cookie);
+                    continue;
                 }
+
+                // Secure cookie on non-HTTPS
+                if (cookie->secure && !is_https) continue;
+
+                // Add cookie to buffer
+                if (evbuffer_get_length(cookie_buffer) > 0)
+                    evbuffer_add(cookie_buffer, "; ", 2);
+
+                evbuffer_add_printf(cookie_buffer, "%s=%s", cookie->name, cookie->value);
             }
         }
     }
 
-    // If no cookies were added to the buffer, return NULL.
-    if (evbuffer_get_length(cookie_buffer) == 0) {
+    size_t len = evbuffer_get_length(cookie_buffer);
+    if (len == 0) {
         evbuffer_free(cookie_buffer);
         return NULL;
     }
 
-    // Convert the evbuffer content to a dynamically allocated string.
-    char *cookie_header_str = strdup((const char *)evbuffer_pullup(cookie_buffer, -1));
-    evbuffer_free(cookie_buffer); // Free the evbuffer
+    const char *data = (const char *)evbuffer_pullup(cookie_buffer, -1);
+    char *result = data ? strndup(data, len) : NULL;
+    evbuffer_free(cookie_buffer);
 
-    return cookie_header_str;
+    return result;
 }

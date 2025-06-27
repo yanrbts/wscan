@@ -29,7 +29,12 @@
 #ifndef __WS_HTTP_H__
 #define __WS_HTTP_H__
 
+#include <event2/event.h>
+#include <event2/http.h>
+#include <event2/util.h>
+#include <event2/buffer.h>
 #include <event2/keyvalq_struct.h> // For struct evkeyvalq
+#include <event2/bufferevent_ssl.h>
 #include <ws_event.h>
 
 // Define HTTP request method enum

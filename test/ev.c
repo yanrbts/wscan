@@ -139,27 +139,27 @@ int main() {
     // }
 
     // 3. 添加一个时间事件：5秒后触发一次性定时器
-    struct timeval tv_one_shot = {5, 0}; // 5秒
-    ws_event_handle *timer_one_shot_handle = ws_event_add_time(we, &tv_one_shot, my_timer_cb, (void*)"One-shot timer", true);
-    if (!timer_one_shot_handle) {
-        ws_log_error("Failed to add one-shot timer event.");
-    } else {
-        ws_log_info("Added one-shot timer event (ID: %lld) to trigger in 5 seconds.", timer_one_shot_handle->id);
-    }
+    // struct timeval tv_one_shot = {5, 0}; // 5秒
+    // ws_event_handle *timer_one_shot_handle = ws_event_add_time(we, &tv_one_shot, my_timer_cb, (void*)"One-shot timer", true);
+    // if (!timer_one_shot_handle) {
+    //     ws_log_error("Failed to add one-shot timer event.");
+    // } else {
+    //     ws_log_info("Added one-shot timer event (ID: %lld) to trigger in 5 seconds.", timer_one_shot_handle->id);
+    // }
     
     // 4. 发送一个 GET HTTP请求
-    ws_http_request_options get_options = {0};
-    get_options.method = WS_HTTP_GET;
-    get_options.url = "http://httpbin.org/get?param1=value1"; // 一个简单的GET请求
-    get_options.timeout_ms = 8000; // 8秒超时
+    // ws_http_request_options get_options = {0};
+    // get_options.method = WS_HTTP_GET;
+    // get_options.url = "http://httpbin.org/get?param1=value1"; // 一个简单的GET请求
+    // get_options.timeout_ms = 8000; // 8秒超时
 
-    ws_log_info("Sending GET request to %s", get_options.url);
-    ws_event_handle *get_req_handle = ws_event_http_request(we, &get_options, my_http_response_handler, we);
-    if (!get_req_handle) {
-        ws_log_error("Failed to send GET request.");
-    } else {
-        ws_log_info("GET request sent (Handle ID: %lld).", get_req_handle->id);
-    }
+    // ws_log_info("Sending GET request to %s", get_options.url);
+    // ws_event_handle *get_req_handle = ws_event_http_request(we, &get_options, my_http_response_handler, we);
+    // if (!get_req_handle) {
+    //     ws_log_error("Failed to send GET request.");
+    // } else {
+    //     ws_log_info("GET request sent (Handle ID: %lld).", get_req_handle->id);
+    // }
     
     // 5. 发送一个 POST HTTP请求 (带数据和自定义头部)
     char *post_data = "";
