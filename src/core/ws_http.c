@@ -27,13 +27,7 @@
  */
 #include <string.h>
 #include <sys/queue.h> // For TAILQ_FOREACH
-#include <event2/event.h>
-#include <event2/http.h>
-#include <event2/util.h>
-#include <event2/buffer.h>
-#include <event2/keyvalq_struct.h> // For struct evkeyvalq
-#include <event2/bufferevent_ssl.h>
-#include <evhttp.h>
+
 #include <ws_malloc.h>
 #include <ws_log.h>
 #include <ws_http.h>

@@ -11,6 +11,9 @@ pkg_check_modules(LIBEVENT_OPENSSL REQUIRED libevent_openssl)
 # 查找 OpenSSL 库
 find_package(OpenSSL REQUIRED) # 确保 OpenSSL 库也被找到
 
+# 查找 libcurl 库
+find_package(CURL REQUIRED)
+
 # 查找 src/core 下所有源文件
 file(GLOB CORE_SOURCES ${PROJECT_SOURCE_DIR}/src/core/*.c)
 file(GLOB TEST_SOURCES *.c)
@@ -23,6 +26,8 @@ include_directories(${LIBEVENT_INCLUDE_DIRS})
 include_directories(${LIBEVENT_OPENSSL_INCLUDE_DIRS})
 # 添加 OpenSSL 的头文件路径
 include_directories(${OPENSSL_INCLUDE_DIR})
+# 添加 libcurl 的头文件路径
+include_directories(${CURL_INCLUDE_DIRS})
 # --- 新增部分结束 ---
 add_definitions(-DLOG_USE_COLOR)
 foreach(test_src ${TEST_SOURCES})
@@ -35,5 +40,6 @@ foreach(test_src ${TEST_SOURCES})
         ${LIBEVENT_OPENSSL_LIBRARIES} # 确保链接到 libevent 的 OpenSSL 模块
         ${LIBEVENT_LIBRARIES}         # 核心 Libevent 库
         ${OPENSSL_LIBRARIES}          # OpenSSL 库
+        ${CURL_LIBRARIES}             # libcurl 库
     )
 endforeach()
