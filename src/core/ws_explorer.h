@@ -77,6 +77,6 @@ void ws_explorer_stop(ws_explorer *explorer);
 void ws_explorer_free(ws_explorer *explorer);
 
 // Link extraction placeholder
-ws_request** ws_extract_links(const ws_response *response, const ws_request *original_request, size_t *num_links_out);
+ws_request** ws_extract_links(ws_explorer *explorer, const ws_response *response, const ws_request *original_request, size_t *num_links_out);
 
 #endif

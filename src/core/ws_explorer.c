@@ -132,9 +132,9 @@ void ws_explorer_mark_visited(ws_explorer *explorer, const char *url) {
 // Placeholder for HTML/JS link extraction
 // In a real crawler, you'd use a robust HTML parsing library (e.g., libxml2, Gumbo)
 // to accurately find links in <a>, <link>, <script> tags, etc.
-ws_request** ws_extract_links(const ws_response *response, const ws_request *original_request, size_t *num_links_out) {
+ws_request** ws_extract_links(ws_explorer *explorer, const ws_response *response, const ws_request *original_request, size_t *num_links_out) {
     *num_links_out = 0;
-    if (!response || !response->content || original_request->link_depth >= original_request->link_depth) { // Typo: original_request->link_depth >= explorer->max_depth
+    if (!response || !response->content || original_request->link_depth >= explorer->max_depth) {
         return NULL;
     }
 
@@ -270,9 +270,11 @@ void ws_explorer_free(ws_explorer *explorer) {
 
 // Helper to try adding requests from queue if parallelism limit allows
 static void ws_explorer_try_add_requests(ws_explorer *explorer) {
+    ws_log_info("Entering ws_explorer_try_add_requests (Active: %d)", explorer->active_easy_handles);
     while (explorer->active_easy_handles < explorer->parallelism && !explorer->stop_flag) {
         ws_request *next_req = ws_queue_pop(explorer);
         if (!next_req) {
+            ws_log_info("Queue is empty, breaking from try_add_requests.");
             break; // Queue is empty
         }
 
@@ -303,13 +305,16 @@ static void ws_explorer_try_add_requests(ws_explorer *explorer) {
             ws_request_free(next_req); // Discard and free if failed to add
         }
         zfree(full_url);
+        ws_log_info("Looping in try_add_requests (Active: %d)", explorer->active_easy_handles);
     }
+    ws_log_info("Exiting ws_explorer_try_add_requests (Active: %d)", explorer->active_easy_handles);
 }
 
 // This is the callback from ws_http.c when a request completes
 static void ws_explorer_http_completion_cb(int status_code, struct evkeyvalq *headers,
                                             const char *body, size_t body_len,
                                             void *user_data, int error_code) {
+    ws_log_info("Entering http_completion_cb");
     // user_data here is the original ws_request that we passed to ws_http_perform_request.
     ws_request *completed_request = (ws_request *)user_data;
     ws_explorer *explorer_parent = (ws_explorer *)completed_request->user_data; // This holds the explorer instance
@@ -328,7 +333,7 @@ static void ws_explorer_http_completion_cb(int status_code, struct evkeyvalq *he
     // Process response: extract links
     if (status_code >= 200 && status_code < 300 && error_code == 0) { // Success
         size_t num_extracted_links = 0;
-        ws_request **extracted_requests = ws_extract_links(completed_request->response, completed_request, &num_extracted_links);
+        ws_request **extracted_requests = ws_extract_links(explorer_parent, completed_request->response, completed_request, &num_extracted_links);
         for (size_t i = 0; i < num_extracted_links; ++i) {
             if (extracted_requests[i]) {
                  char *link_full_url = ws_safe_strdup(extracted_requests[i]->url); // Use request's URL directly
@@ -363,6 +368,7 @@ static void ws_explorer_http_completion_cb(int status_code, struct evkeyvalq *he
         ws_log_info("All active requests completed and queue is empty. Stopping explorer.");
         ws_event_stop(explorer_parent->event_base);
     }
+    ws_log_info("Exiting http_completion_cb");
 }
 
 void ws_explorer_explore(ws_explorer *explorer, ws_request *initial_request) {

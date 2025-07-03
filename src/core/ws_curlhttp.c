@@ -118,13 +118,14 @@ static int ws_socket_callback(CURL *easy, curl_socket_t s, int what, void *userp
     }
 
     if (what == CURL_POLL_REMOVE) {
-        // Remove existing events for this socket
+        // The event handles will be cleaned up in ws_check_multi_info.
+        // Just make sure we don't try to use them again.
         if (ctx->socket_event_read) {
-            ws_event_del(ctx->socket_event_read);
+            event_del(ctx->socket_event_read->normal.ev);
             ctx->socket_event_read = NULL;
         }
         if (ctx->socket_event_write) {
-            ws_event_del(ctx->socket_event_write);
+            event_del(ctx->socket_event_write->normal.ev);
             ctx->socket_event_write = NULL;
         }
     } else {
@@ -134,27 +135,20 @@ static int ws_socket_callback(CURL *easy, curl_socket_t s, int what, void *userp
         // However, if we need to track separate read/write handles, it's safer to have two distinct `ws_event_handle`s.
 
         if (what == CURL_POLL_IN || what == CURL_POLL_INOUT) {
-            if (!ctx->socket_event_read) {
-                // Create a new persistent event for reading
-                ctx->socket_event_read = ws_event_add(we, s, EV_READ, ws_curl_socket_event_cb, ctx, true);
-            } else {
-                // Event already exists, re-add to update/ensure it's active
-                // ws_event_add will delete and re-create the underlying libevent event for robustness.
-                ws_event_add(we, s, EV_READ, ws_curl_socket_event_cb, ctx, true);
+            if (ctx->socket_event_read) {
+                ws_event_del(ctx->socket_event_read);
             }
+            ctx->socket_event_read = ws_event_add(we, s, EV_READ, ws_curl_socket_event_cb, ctx, true);
         } else if (ctx->socket_event_read) { // No longer interested in read
              ws_event_del(ctx->socket_event_read);
              ctx->socket_event_read = NULL;
         }
 
         if (what == CURL_POLL_OUT || what == CURL_POLL_INOUT) {
-            if (!ctx->socket_event_write) {
-                // Create a new persistent event for writing
-                ctx->socket_event_write = ws_event_add(we, s, EV_WRITE, ws_curl_socket_event_cb, ctx, true);
-            } else {
-                // Event already exists, re-add to update/ensure it's active
-                ws_event_add(we, s, EV_WRITE, ws_curl_socket_event_cb, ctx, true);
+            if (ctx->socket_event_write) {
+                ws_event_del(ctx->socket_event_write);
             }
+            ctx->socket_event_write = ws_event_add(we, s, EV_WRITE, ws_curl_socket_event_cb, ctx, true);
         } else if (ctx->socket_event_write) { // No longer interested in write
             ws_event_del(ctx->socket_event_write);
             ctx->socket_event_write = NULL;
@@ -195,19 +189,15 @@ static int ws_timer_callback(CURLM *multi, long timeout_ms, void *userp) {
         tv.tv_sec = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
 
+        // If a timer is already set, delete it before creating a new one.
         if (manager_ctx->curl_multi_timer_event_handle) {
-            // Timer event already exists, just update it by re-adding (libevent handles this)
-            // It's safe to call event_add again on the same event struct.
-            // ws_event_add_time will internally call event_del and event_add for robustness.
-            ws_log_info("Updating existing curl multi timer event with timeout %ld.%06ld seconds.", tv.tv_sec, tv.tv_usec);
-            manager_ctx->curl_multi_timer_event_handle = ws_event_add_time(we, &tv, ws_curl_multi_timer_cb, manager_ctx, false); // Not persistent
-        } else {
-            // Create new timer event
-            ws_log_info("Setting new curl multi timer event with timeout %ld.%06ld seconds.", tv.tv_sec, tv.tv_usec);
-            manager_ctx->curl_multi_timer_event_handle = ws_event_add_time(we, &tv, ws_curl_multi_timer_cb, manager_ctx, false); // Not persistent
-            if (!manager_ctx->curl_multi_timer_event_handle) {
-                ws_log_error("Failed to add curl multi timer event.");
-            }
+            ws_event_del(manager_ctx->curl_multi_timer_event_handle);
+        }
+
+        ws_log_info("Setting new curl multi timer event with timeout %ld.%06ld seconds.", tv.tv_sec, tv.tv_usec);
+        manager_ctx->curl_multi_timer_event_handle = ws_event_add_time(we, &tv, ws_curl_multi_timer_cb, manager_ctx, true); // Not persistent
+        if (!manager_ctx->curl_multi_timer_event_handle) {
+            ws_log_error("Failed to add curl multi timer event.");
         }
     }
     return 0;
@@ -260,9 +250,6 @@ static void ws_check_multi_info(ws_http_manager_ctx *manager_ctx) {
                 curl_multi_remove_handle(multi_handle, easy_handle);
                 curl_easy_cleanup(easy_handle);
 
-                // Free the internal context and its associated ws_event_handles
-                // These handles were already removed/freed by ws_socket_callback with CURL_POLL_REMOVE
-                // or if the connection was closed. Double check this logic.
                 // A safer way is to just call ws_event_del here if handles are still set.
                 if (ctx->socket_event_read) {
                     ws_event_del(ctx->socket_event_read);

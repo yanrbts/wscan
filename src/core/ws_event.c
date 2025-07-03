@@ -191,7 +191,7 @@ void ws_event_del(ws_event_handle *handle) {
     if (!handle) return;
 
     if (handle->base && handle->base->events) {
-        ws_log_info("Removing event handle ID %lld from red-black tree: %p", handle->id, (void*)handle);
+        // ws_log_info("Removing event handle ID %lld from red-black tree: %p", handle->id, (void*)handle);
         // rbDelete only removes the node from the tree and does not call ws_rb_item_func.
         // We manually call ws_rb_item_func to free the handle itself and libevent resources.
         rbDelete(handle->base->events, handle);
