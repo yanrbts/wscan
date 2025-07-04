@@ -25,176 +25,116 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+
 #ifndef __WS_EVENT_H__
 #define __WS_EVENT_H__
 
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stddef.h>
+#include <event2/util.h>
 #include <event2/event.h>
-#include <event2/keyvalq_struct.h> // For struct evkeyvalq
-#include <ws_rbtree.h>
-#include <ws_ssl.h>
-#include <ws_cookie.h>
+
+/* Forward declarations to keep internal structure opaque */
+typedef struct ws_event_loop    ws_event_loop_t;
+typedef struct ws_event         ws_event_t;
 
 /**
- * @brief HTTP request completion callback function type.
- * @param status_code HTTP status code (e.g., 200, 404). 0 for timeout, -1 for other errors.
- * @param headers HTTP response headers.
- * @param body Response body data.
- * @param body_len Length of the response body.
- * @param user_data User-provided argument.
- * @param error_code 0 for success, non-zero for errors (e.g., -1 for timeout, -2 for connection error).
+ * @brief Callback for I/O (socket) events.
+ * @param fd The file descriptor (socket).
+ * @param events The events that occurred (e.g., WS_EV_READ, WS_EV_WRITE).
+ * @param user_data Custom data passed by the user when creating the event.
  */
-typedef void (*ws_event_http_cb)(int status_code, struct evkeyvalq *headers,
-                                 const char *body, size_t body_len,
-                                 void *user_data, int error_code);
-
-// Generic event callback function type
-typedef void (*ws_event_cb)(int fd, short events, void *arg);
-
-// Event type enum
-typedef enum {
-    WS_EVENT_NORMAL = 0,
-    WS_EVENT_HTTP = 1,
-    WS_EVENT_TIME = 2
-} ws_event_type;
-
-// Event base structure
-typedef struct ws_event_base {
-    struct event_base *base;
-    long long next_event_id; // Used to generate unique event IDs
-    int total_requests;
-    int success_requests;
-    int failed_requests;
-    rbTable *events; // Red-black tree to manage events
-    SSL_CTX *ssl_ctx;
-    ws_cookie_jar *cookie_jar;
-} ws_event_base;
-
-// Event handle structure
-typedef struct ws_event_handle {
-    long long id;              // Unique identifier, used as the key for the red-black tree
-    ws_event_type type;        // Event type (Normal, HTTP, Time)
-    ws_event_base *base;       // Pointer to its owning event base
-
-    union {
-        /* Normal event */
-        struct {
-            int fd;
-            struct event *ev;
-            ws_event_cb callback;
-            bool is_persistent;
-        } normal;
-        /* HTTP event */
-        struct {
-            // Note: http.conn is no longer explicitly saved in ws_event_handle
-            // Its lifecycle is managed by libevent, or by a connection pool if needed
-            ws_event_http_cb callback;
-            void *internal_ctx; // Pointer to the internal HTTP request context
-            const char *request_host;
-            const char *request_path;
-            bool is_https_request; 
-        } http;
-        /* Time event */
-        struct {
-            struct event *ev;
-            ws_event_cb callback;
-            struct timeval timeout;
-            bool is_persistent;
-        } time;
-    };
-
-    void *arg;
-} ws_event_handle;
+typedef void (*ws_io_callback_fn)(evutil_socket_t fd, short events, void *user_data);
 
 /**
- * @brief Creates a new event base.
- * This function initializes a new event base, which is the core of the event loop.
- * It allocates memory for the ws_event_base structure and sets up the event base.
- * @return A pointer to the newly created ws_event_base structure, or NULL on failure.
+ * @brief Callback for timer events.
+ * @param user_data Custom data passed by the user when creating the event.
  */
-ws_event_base *ws_event_new(void);
+typedef void (*ws_timer_callback_fn)(void *user_data);
+
+#define WS_EV_TIMEOUT    EV_TIMEOUT  // Timer event
+#define WS_EV_READ       EV_READ     // Read readiness notification
+#define WS_EV_WRITE      EV_WRITE    // Write readiness notification
+#define WS_EV_PERSIST    EV_PERSIST  // Make event persistent (auto-readd after triggering)
+#define WS_EV_ET         EV_ET       // Edge-triggered (advanced I/O)
 
 /**
- * @brief Frees the ws_event_base structure and its associated resources.
- * This function is responsible for cleaning up the event base and freeing memory
- * allocated for the ws_event_base structure. It ensures that all resources
- * are properly released to prevent memory leaks.
- * @param we A pointer to the ws_event_base structure to be freed.
+ * @brief Creates a new event loop instance.
+ * @return A pointer to the new event loop, or NULL on failure.
  */
-void ws_event_free(ws_event_base *we);
+ws_event_loop_t *ws_event_loop_new(void);
 
 /**
- * @brief Deletes an event handle.
- * This function is responsible for removing an event from the event loop and
- * freeing associated resources. It ensures that the event is no longer monitored
- * and memory is properly released.
- * @param handle A pointer to the ws_event_handle structure to be deleted.
+ * @brief Frees an event loop and all associated events.
+ * Does NOT free user_data passed with events; caller is responsible for that.
+ * @param loop The event loop to free.
  */
-void ws_event_del(ws_event_handle *handle);
+void ws_event_loop_free(ws_event_loop_t *loop);
 
 /**
- * @brief Adds a normal event to the event loop.
- * This function creates a new event that will trigger when a file descriptor
- * is ready for reading or writing. It allows for asynchronous I/O operations,
- * useful for network sockets or file descriptors.
- * @param we A pointer to the ws_event_base structure.
- * @param fd The file descriptor to monitor.
- * @param events The events to monitor (e.g., EV_READ, EV_WRITE).
- * @param callback The callback function to call when the event triggers.
- * @param arg An argument to pass to the callback function.
- * @param is_persistent If true, the event will be persistent and will
- * repeatedly trigger until explicitly removed.
- * @return A pointer to the newly created ws_event_handle structure, or NULL on failure.
+ * @brief Starts the event loop dispatching. This function blocks until the loop
+ * is stopped or no more events are registered.
+ * @param loop The event loop to dispatch.
+ * @return true if dispatch completed successfully, false on error.
  */
-ws_event_handle *ws_event_add(ws_event_base *we,
-    int fd, short events,
-    ws_event_cb callback, void *arg, bool is_persistent);
+bool ws_event_loop_dispatch(ws_event_loop_t *loop);
 
 /**
- * @brief Adds a time-based event to the event loop.
- * This function creates a new time-based event that will trigger after a
- * specified timeout duration. It allows for scheduling events to occur after
- * a certain period, useful for tasks like timeouts or periodic checks.
- * @param we A pointer to the ws_event_base structure.
- * @param tv A pointer to a timeval structure specifying the timeout duration.
- * @param callback The callback function to call when the event triggers.
- * @param arg An argument to pass to the callback function.
- * @param is_persistent If true, the event will be persistent and will
- * repeatedly trigger until explicitly removed.
- * @return A pointer to the newly created ws_event_handle structure, or NULL on failure.
+ * @brief Stops the event loop from dispatching. This will cause ws_event_loop_dispatch
+ * to return. Can be called from any thread.
+ * @param loop The event loop to stop.
  */
-ws_event_handle *ws_event_add_time(ws_event_base *we,
-    const struct timeval *tv, ws_event_cb callback, void *arg, bool is_persistent);
+void ws_event_loop_stop(ws_event_loop_t *loop);
+
+// --- Event Creation and Management ---
 
 /**
- * @brief Starts the event loop.
- * This function starts the event loop, which will run until there are no
- * more events to process or the loop is stopped. It processes events and
- * calls associated callbacks as events occur.
- * @param we A pointer to the ws_event_base structure.
- * @return 0 on successful loop exit, or -1 if an error occurred.
+ * @brief Creates a new I/O (socket) event.
+ * The event will monitor the given file descriptor for read/write readiness.
+ * @param loop The event loop to associate the event with.
+ * @param fd The file descriptor (socket) to monitor.
+ * @param flags Combinations of WS_EV_READ, WS_EV_WRITE, WS_EV_PERSIST, WS_EV_ET.
+ * @param callback The function to call when the event triggers.
+ * @param user_data Custom data to pass to the callback. This module does not manage
+ * the lifetime of user_data.
+ * @return A pointer to the new event, or NULL on failure.
  */
-int ws_event_loop(ws_event_base *we);
+ws_event_t *ws_event_new_io(ws_event_loop_t *loop, evutil_socket_t fd, short flags,
+                            ws_io_callback_fn callback, void *user_data);
 
 /**
- * @brief Stops the event loop.
- * This function stops the event loop, allowing it to exit gracefully.
- * It is typically called during application shutdown or when event processing
- * is no longer needed.
- * @param we A pointer to the ws_event_base structure.
+ * @brief Creates a new timer event.
+ * @param loop The event loop to associate the event with.
+ * @param timeout_ms The timeout duration in milliseconds.
+ * @param is_persistent If true, the timer will re-arm automatically after triggering.
+ * @param callback The function to call when the timer triggers.
+ * @param user_data Custom data to pass to the callback. This module does not manage
+ * the lifetime of user_data.
+ * @return A pointer to the new event, or NULL on failure.
  */
-void ws_event_stop(ws_event_base *we);
+ws_event_t *ws_event_new_timer(ws_event_loop_t *loop, long timeout_ms, bool is_persistent,
+                               ws_timer_callback_fn callback, void *user_data);
 
 /**
- * @brief Inserts an event handle into the event base's red-black tree.
- * This function is now public for use by other modules (e.g., ws_http.c).
- * @param we The event base.
- * @param item The handle to insert.
- * @return The inserted handle, or NULL on error (e.g., duplicate ID).
+ * @brief Adds an event to the event loop, making it active.
+ * @param event The event to add.
+ * @return true on success, false on failure.
  */
-ws_event_handle *ws_insert_event(ws_event_base *we, ws_event_handle *item);
+bool ws_event_add(ws_event_t *event);
 
-#endif // __WS_EVENT_H__
+/**
+ * @brief Removes an event from the event loop, making it inactive.
+ * Does not free the event structure itself.
+ * @param event The event to remove.
+ * @return true on success, false if the event was not active or on error.
+ */
+bool ws_event_del(ws_event_t *event);
+
+/**
+ * @brief Frees an event structure.
+ * Must be called only after the event has been removed from the loop (if active).
+ * Does NOT free user_data.
+ * @param event The event to free.
+ */
+void ws_event_free(ws_event_t *event);
+
+#endif

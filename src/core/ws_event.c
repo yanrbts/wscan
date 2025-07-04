@@ -25,325 +25,276 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+#include <stdio.h>
+#include <stdlib.h> 
 #include <string.h>
-#include <ws_malloc.h>
 #include <ws_log.h>
+#include <ws_malloc.h>
 #include <ws_event.h>
-#include <ws_util.h>
 
-static int ws_rb_comparison_func(const void *rb_a, const void *rb_b, void *rb_param) {
-    UNUSED(rb_param);
-    const ws_event_handle *a = (const ws_event_handle *)rb_a;
-    const ws_event_handle *b = (const ws_event_handle *)rb_b;
-    return (a->id < b->id) ? -1 : (a->id > b->id) ? 1 : 0;
-}
+struct ws_event_loop {
+    struct event_base *base;
+    bool stop_flag; // Flag for graceful shutdown
+};
 
-// Red-black tree item free function: frees only the ws_event_handle itself and its libevent event object
-static void ws_rb_item_func(void *rb_item, void *rb_param) {
-    UNUSED(rb_param);
+/* Represents our generic event wrapper
+ * This union allows us to store different callback types efficiently */
+struct ws_event {
+    struct event *ev;             // The underlying Libevent event
+    ws_event_loop_t *loop;        // Pointer back to the owning loop
 
-    if (rb_item) {
-        ws_event_handle *h = (ws_event_handle *)rb_item;
+    // Callback and user data
+    union {
+        ws_io_callback_fn io_cb;
+        ws_timer_callback_fn timer_cb;
+    } cb;
+    void *user_data;
 
-        switch (h->type) {
-            case WS_EVENT_NORMAL:
-                if (h->normal.ev) {
-                    event_del(h->normal.ev);
-                    event_free(h->normal.ev);
-                }
-                break;
-            case WS_EVENT_HTTP:
-                // The internal HTTP context (ws_http_internal_context) is freed in cleanup_http_context or on timeout.
-                // Ensure h->http.internal_ctx has already been freed via cleanup_http_context at this point.
-                // Only free the ws_event_handle itself here.
-                break;
-            case WS_EVENT_TIME:
-                if (h->time.ev) {
-                    event_del(h->time.ev);
-                    event_free(h->time.ev);
-                }
-                break;
-            default:
-                ws_log_error("Unknown event type for item_func: %d", h->type);
-                break;
-        }
-        // Free the event handle itself
-        zfree(h);
+    short evtype_flags;            // Store original flags for proper callback dispatch
+    long timeout_ms_val;           // Stores the timeout for timer events (ADDED FOR ROBUST TIMERS)
+};
+
+/* Generic callback for I/O events from Libevent */
+static void s_event_io_cb(evutil_socket_t fd, short events, void *arg) {
+    ws_event_t *ev = (ws_event_t *)arg;
+
+    if (ev && (ev->evtype_flags & (WS_EV_READ | WS_EV_WRITE | WS_EV_ET))) {
+        if (ev->cb.io_cb)
+            ev->cb.io_cb(fd, events, ev->user_data);
+        else
+            ws_log_warn("ws_event_t (%p) triggered IO but has no io_cb defined.", (void*)ev);
+    } else {
+        ws_log_error("Invalid or unexpected event type in s_event_io_cb for event %p (fd %d, events %d).", 
+                    (void*)ev, fd, events);
     }
 }
 
-// Generic event internal callback (for normal I/O and time events)
-static void ws_event_internal_cb(evutil_socket_t fd, short events, void *arg) {
-    ws_event_handle *handle = (ws_event_handle *)arg;
-    if (!handle) return;
+/* Generic callback for timer events from Libevent */
+static void s_event_timer_cb(evutil_socket_t fd, short events, void *arg) {
+    (void)fd;
+    (void)events;
 
-    switch (handle->type) {
-        case WS_EVENT_NORMAL:
-            if (handle->normal.callback)
-                handle->normal.callback(fd, events, handle->arg);
-            // If it's a non-persistent event, delete it after the callback
-            if (!(handle->normal.is_persistent)) {
-                ws_event_del(handle);
-            }
-            break;
-        case WS_EVENT_TIME:
-            if (handle->time.callback)
-                handle->time.callback(fd, events, handle->arg);
-            // If it's a non-persistent time event, delete it after the callback
-            if (!(handle->time.is_persistent)) {
-                ws_event_del(handle);
-            }
-            break;
-        default:
-            ws_log_error("Unknown event type in internal_cb: %d", handle->type);
-            break;
+    ws_event_t *ev = (ws_event_t *)arg;
+
+    if (ev && (ev->evtype_flags & WS_EV_TIMEOUT)) {
+        if (ev->cb.timer_cb)
+            ev->cb.timer_cb(ev->user_data);
+        else
+            ws_log_warn("ws_event_t (%p) triggered Timer but has no timer_cb defined.", (void*)ev);
+    } else {
+        ws_log_error("Invalid or unexpected event type in s_event_timer_cb for event %p.", (void*)ev);
     }
 }
 
-/**
- * @brief Creates a new ws_event_base structure.
- */
-ws_event_base *ws_event_new(void) {
-    ws_event_base *we = zmalloc(sizeof(ws_event_base));
-    if (!we) {
-        ws_log_error("Failed to allocate memory for ws_event_base.");
-        goto err;
+ws_event_loop_t *ws_event_loop_new(void) {
+    ws_event_loop_t *loop = zcalloc(1, sizeof(ws_event_loop_t));
+    if (!loop) {
+        ws_log_error("Failed to allocate memory for ws_event_loop_t.");
+        return NULL;
     }
 
-    we->base = event_base_new();
-    if (!we->base) {
+    loop->base = event_base_new();
+    if (!loop->base) {
         ws_log_error("Failed to create libevent event_base.");
-        goto err;
+        zfree(loop);
+        return NULL;
+    }
+    ws_log_info("Libevent loop created.");
+    return loop;
+}
+
+void ws_event_loop_free(ws_event_loop_t *loop) {
+    if (!loop) return;
+
+    /* It's crucial that all events associated with this base are removed/freed
+     * before freeing the base itself. Libevent typically handles this
+     * if you event_free() each event, but it's good practice to ensure. */
+    if (loop->base) {
+        event_base_free(loop->base);
+        ws_log_info("Libevent event_base freed.");
+    }
+    zfree(loop);
+    ws_log_info("Event loop freed.");
+}
+
+bool ws_event_loop_dispatch(ws_event_loop_t *loop) {
+    if (!loop || !loop->base) {
+        ws_log_error("Cannot dispatch on a NULL or uninitialized event loop.");
+        return false;
     }
 
-    // **Initialize OpenSSL library and create SSL_CTX**
-    if (ws_ssl_init_libs() != 0) {
-        ws_log_error("Failed to initialize OpenSSL libraries.");
-        goto err;
+    ws_log_info("Starting event loop dispatch.");
+    loop->stop_flag = false; // Reset stop flag before dispatching
+
+    /* event_base_dispatch returns:
+     *  0: no events were active, or event_base_loopbreak() was called.
+     *  1: error
+     * -1: internal error */
+    int result = event_base_dispatch(loop->base);
+
+    if (result == -1) {
+        ws_log_error("Error occurred during event loop dispatch.");
+        return false;
+    } else if (result == 1) {
+        ws_log_info("Event loop stopped (no events or loopbreak called).");
+    } else {
+        ws_log_info("Event loop dispatch completed normally.");
     }
 
-    we->ssl_ctx = ws_ssl_client_ctx_new();
-    if (!we->ssl_ctx) {
-        ws_log_error("Failed to create SSL_CTX for ws_event_base.");
-        goto err;
+    return true;
+}
+
+void ws_event_loop_stop(ws_event_loop_t *loop) {
+    if (!loop || !loop->base) return;
+    
+    loop->stop_flag = true;
+    /* event_base_loopbreak() is thread-safe 
+     * and causes event_base_dispatch() to return */
+    event_base_loopbreak(loop->base);
+    ws_log_info("Event loop stop requested.");
+}
+
+static ws_event_t *s_ws_event_new_common(ws_event_loop_t *loop, evutil_socket_t fd, 
+                                        short flags, void *user_data) {
+    if (!loop || !loop->base) {
+        ws_log_error("Cannot create event: invalid event loop.");
+        return NULL;
     }
 
-    we->cookie_jar = ws_cookie_jar_new();
-    if (!we->cookie_jar) {
-        ws_log_error("Failed to create cookie jar.");
-        goto err;
+    ws_event_t *ev = zcalloc(1, sizeof(ws_event_t));
+    if (!ev) {
+        ws_log_error("Failed to allocate memory for ws_event_t.");
+        return NULL;
     }
 
-    we->next_event_id = 1; // ID starts from 1
-    we->total_requests = 0;
-    we->success_requests = 0;
-    we->failed_requests = 0;
+    ev->loop = loop;
+    ev->user_data = user_data;
+    ev->evtype_flags = flags;
 
-    we->events = rbCreate(ws_rb_comparison_func, NULL);
-    if (!we->events) {
-        ws_log_error("Failed to create red-black tree for events.");
-        goto err;
+    // Determine which internal Libevent callback to use based on event flags
+    // This is the fix: use Libevent's type directly for the function pointer.
+    event_callback_fn cb = NULL; 
+    if (flags & (WS_EV_READ | WS_EV_WRITE | WS_EV_ET)) {
+        cb = s_event_io_cb;
+    } else if (flags & WS_EV_TIMEOUT) {
+        cb = s_event_timer_cb;
+    } else {
+        ws_log_error("Unsupported event flags %d.", (int)flags);
+        zfree(ev);
+        return NULL;
     }
 
-    return we;
+    // event_new creates a new event struct and initializes it
+    ev->ev = event_new(loop->base, fd, flags, cb, ev);
+    if (!ev->ev) {
+        ws_log_error("Failed to create libevent event (fd: %d, flags: %d).", fd, (int)flags);
+        zfree(ev);
+        return NULL;
+    }
 
-err:
-    if (we) {
-        if (we->ssl_ctx) {
-            ws_ssl_free_ctx(we->ssl_ctx); // Clean up SSL_CTX
-            ws_ssl_cleanup_libs();        // Clean up OpenSSL libraries
+    ws_log_info("New ws_event_t %p created (fd %d, flags %d).", (void*)ev, fd, (int)flags);
+    return ev;
+}
+
+ws_event_t *ws_event_new_io(ws_event_loop_t *loop, evutil_socket_t fd, short flags,
+                            ws_io_callback_fn callback, void *user_data) {
+    if (!(flags & (WS_EV_READ | WS_EV_WRITE)) || (flags & WS_EV_TIMEOUT)) {
+        ws_log_error("Invalid flags for IO event. Must include WS_EV_READ/WS_EV_WRITE, not WS_EV_TIMEOUT.");
+        return NULL;
+    }
+
+    ws_event_t *ev = s_ws_event_new_common(loop, fd, flags, user_data);
+    if (ev) ev->cb.io_cb = callback;
+
+    return ev;
+}
+
+ws_event_t *ws_event_new_timer(ws_event_loop_t *loop, long timeout_ms, bool is_persistent,
+                               ws_timer_callback_fn callback, void *user_data) {
+    if (timeout_ms < 0) {
+        ws_log_error("Timer timeout_ms cannot be negative.");
+        return NULL;
+    }
+
+    short flags = WS_EV_TIMEOUT;
+    if (is_persistent) {
+        flags |= WS_EV_PERSIST;
+    }
+
+    // -1 for fd on timers
+    ws_event_t *ev = s_ws_event_new_common(loop, -1, flags, user_data);
+    if (ev) {
+        ev->cb.timer_cb = callback;
+        ev->timeout_ms_val = timeout_ms;
+    }
+
+    return ev;
+}
+
+bool ws_event_add(ws_event_t *event) {
+    if (!event || !event->ev) {
+        ws_log_error("Cannot add NULL or invalid ws_event_t.");
+        return false;
+    }
+
+    struct timeval tv;
+    struct timeval *ptv = NULL;
+
+    if (event->evtype_flags & WS_EV_TIMEOUT) {
+        long current_timeout_ms = event->timeout_ms_val;
+        if (current_timeout_ms == 0 && !(event->evtype_flags & WS_EV_PERSIST)) {
+            // For non-persistent timers with 0 timeout, make it 1ms to ensure it schedules
+            current_timeout_ms = 1;
+        } else if (current_timeout_ms < 0) { 
+            /* Should not happen if `ws_event_new_timer` checks
+             * 0：Immediate timeout*/
+            current_timeout_ms = 0;
         }
-        if (we->base) event_base_free(we->base);
-        if (we->cookie_jar) zfree(we->cookie_jar);
-        zfree(we);
+
+        tv.tv_sec = current_timeout_ms / 1000;
+        tv.tv_usec = (current_timeout_ms % 1000) * 1000;
+        ptv = &tv;
+        ws_log_debug("Adding timer event for %ld ms.", current_timeout_ms);
     }
-    return NULL;
+
+    if (event_add(event->ev, ptv) == -1) {
+        ws_log_error("Failed to add event %p to event loop.", (void*)event);
+        return false;
+    }
+    
+    ws_log_debug("Event %p added to loop.", (void*)event);
+    return true;
 }
 
-/**
- * @brief Frees the ws_event_base structure and its associated resources.
- */
-void ws_event_free(ws_event_base *we) {
-    if (we) {
-        if (we->events) {
-            rbDestroy(we->events, ws_rb_item_func); // Destroy tree and free all remaining handles
-        }
-        if (we->base)
-            event_base_free(we->base);
-        // **Free SSL_CTX and clean up OpenSSL library**
-        if (we->ssl_ctx) {
-            ws_ssl_free_ctx(we->ssl_ctx);
-        }
-        ws_ssl_cleanup_libs();
-
-        if (we->cookie_jar) {
-            ws_cookie_jar_free(we->cookie_jar);
-        }
-
-        zfree(we);
+bool ws_event_del(ws_event_t *event) {
+    if (!event || !event->ev) {
+        ws_log_error("Cannot delete NULL or invalid ws_event_t.");
+        return false;
     }
+
+    if (event_del(event->ev) == -1) {
+        ws_log_error("Failed to delete event %p from event loop.", (void*)event);
+        return false;
+    }
+
+    ws_log_debug("Event %p deleted from loop.", (void*)event);
+    return true;
 }
 
-/**
- * @brief Deletes an event handle.
- */
-void ws_event_del(ws_event_handle *handle) {
-    if (!handle) return;
+void ws_event_free(ws_event_t *event) {
+    if (!event) return;
 
-    if (handle->base && handle->base->events) {
-        // ws_log_info("Removing event handle ID %lld from red-black tree: %p", handle->id, (void*)handle);
-        // rbDelete only removes the node from the tree and does not call ws_rb_item_func.
-        // We manually call ws_rb_item_func to free the handle itself and libevent resources.
-        rbDelete(handle->base->events, handle);
+    // Ensure event is not active before freeing its libevent counterpart
+    // event_del returns 0 if event was active and removed, 1 if not active, -1 on error
+    if (event_del(event->ev) != -1) {
+        ws_log_debug("Event %p was inactive or successfully deleted before free.", (void*)event);
     }
 
-    // Ensure libevent-related event objects are freed.
-    // ws_rb_item_func already handles event_free; no need to repeat here.
-    // However, for HTTP events, its internal context (ws_http_internal_context) is freed in the internal callback.
-    ws_rb_item_func(handle, NULL);
-}
-
-/**
- * @brief Adds a normal event to the event loop.
- */
-ws_event_handle *ws_event_add(ws_event_base *we, int fd,
-    short events, ws_event_cb callback, void *arg, bool is_persistent) {
-    ws_event_handle *h = NULL;
-    short flags;
-
-    if (!we || !we->base || !callback) {
-        ws_log_error("Invalid parameters for ws_event_add: we=%p, callback=%p", (void*)we, (void*)callback);
-        return NULL;
+    if (event->ev) {
+        event_free(event->ev);
+        event->ev = NULL;
     }
 
-    h = zcalloc(sizeof(ws_event_handle));
-    if (!h) {
-        ws_log_error("Failed to allocate memory for ws_event_handle (normal event).");
-        return NULL;
-    }
-
-    h->id = we->next_event_id++; // Assign unique ID
-    h->type = WS_EVENT_NORMAL;
-    h->normal.callback = callback;
-    h->arg = arg;
-    h->normal.is_persistent = is_persistent;
-    h->normal.fd = fd;
-    h->base = we;
-
-    flags = events;
-    if (is_persistent) flags |= EV_PERSIST;
-
-    h->normal.ev = event_new(we->base, fd, flags, ws_event_internal_cb, h);
-    if (!h->normal.ev) {
-        ws_log_error("Failed to create event for fd: %d, events: %d", fd, events);
-        goto err;
-    }
-
-    if (event_add(h->normal.ev, NULL) < 0) {
-        ws_log_error("Failed to add event for fd: %d, events: %d", fd, events);
-        goto err;
-    }
-
-    if (ws_insert_event(we, h) == NULL) {
-        ws_log_error("Failed to insert normal event handle %lld into tree.", h->id);
-        goto err;
-    }
-
-    return h;
-err:
-    if (h) {
-        if (h->normal.ev)
-            event_free(h->normal.ev);
-        zfree(h);
-    }
-    return NULL;
-}
-
-// Internal function: Inserts an event into the red-black tree
-ws_event_handle *ws_insert_event(ws_event_base *we, ws_event_handle *item) {
-    void **cp = rbProbe(we->events, item);
-    if (!cp) {
-        ws_log_error("Failed to insert event handle %lld into red-black tree.", item->id);
-        return NULL;
-    }
-    if (*cp != item) {
-        // Theoretically, this should not happen when using unique IDs as keys.
-        // If it occurs, it means the generated ID is duplicated, or the tree's comparison function has issues.
-        ws_log_error("Duplicate event ID %lld found in tree. Original: %p, New: %p", item->id, *cp, item);
-        return NULL;
-    }
-    return item;
-}
-
-/**
- * @brief Adds a time-based event to the event loop.
- */
-ws_event_handle *ws_event_add_time(ws_event_base *we,
-    const struct timeval *tv, ws_event_cb callback, void *arg, bool is_persistent) {
-    ws_event_handle *h = NULL;
-
-    if (!we || !we->base || !tv || !callback) {
-        ws_log_error("Invalid parameters for ws_event_add_time: we=%p, tv=%p, callback=%p", (void*)we, (void*)tv, (void*)callback);
-        return NULL;
-    }
-
-    h = zcalloc(sizeof(ws_event_handle));
-    if (!h) {
-        ws_log_error("Failed to allocate memory for ws_event_handle (time event).");
-        return NULL;
-    }
-
-    h->id = we->next_event_id++;
-    h->type = WS_EVENT_TIME;
-    h->time.callback = callback;
-    h->time.timeout = *tv;
-    h->arg = arg;
-    h->base = we;
-    h->time.is_persistent = is_persistent;
-
-    short flags = EV_TIMEOUT;
-    if (is_persistent) flags |= EV_PERSIST;
-
-    h->time.ev = event_new(we->base, -1, flags, ws_event_internal_cb, h);
-    if (!h->time.ev) {
-        ws_log_error("Failed to create time event with timeout: %ld.%06ld", tv->tv_sec, tv->tv_usec);
-        goto err;
-    }
-
-    if (event_add(h->time.ev, tv) < 0) {
-        ws_log_error("Failed to add time event with timeout: %ld.%06ld", tv->tv_sec, tv->tv_usec);
-        goto err;
-    }
-
-    if (ws_insert_event(we, h) == NULL) {
-        ws_log_error("Failed to insert time event handle %lld into tree.", h->id);
-        goto err;
-    }
-
-    return h;
-err:
-    if (h) {
-        if (h->time.ev)
-            event_free(h->time.ev);
-        zfree(h);
-    }
-    return NULL;
-}
-
-/**
- * @brief Starts the event loop.
- */
-int ws_event_loop(ws_event_base *we) {
-    if (!we || !we->base)
-        return -1;
-    return event_base_dispatch(we->base);
-}
-
-/**
- * @brief Stops the event loop.
- */
-void ws_event_stop(ws_event_base *we) {
-    if (!we || !we->base)
-        return;
-    event_base_loopbreak(we->base);
+    zfree(event);
+    ws_log_debug("ws_event_t %p freed.", (void*)event);
 }

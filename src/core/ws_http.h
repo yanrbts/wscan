@@ -29,48 +29,6 @@
 #ifndef __WS_HTTP_H__
 #define __WS_HTTP_H__
 
-#include <event2/event.h>
-#include <event2/http.h>
-#include <event2/util.h>
-#include <event2/buffer.h>
-#include <event2/keyvalq_struct.h> // For struct evkeyvalq
-#include <event2/bufferevent_ssl.h>
-#include <ws_event.h>
 
-// Define HTTP request method enum
-typedef enum {
-    WS_HTTP_GET,
-    WS_HTTP_POST,
-    WS_HTTP_PUT,
-    WS_HTTP_DELETE,
-} ws_http_method;
-
-// HTTP Request parameters structure (replaces original host, port, uri parameters)
-typedef struct ws_http_request_options {
-    ws_http_method method;               // Request method (GET, POST, etc.)
-    const char *url;                     // Full URL (e.g., "http://example.com/path?query=val")
-    struct evkeyvalq *headers;           // Optional custom request headers
-    const char *body_data;               // POST/PUT request body data (optional)
-    size_t body_len;                     // Length of POST/PUT request body data
-    long timeout_ms;                     // Request timeout in milliseconds (0 means default or no timeout)
-    bool follow_redirects;               // Whether to automatically follow redirects (requires additional logic)
-} ws_http_request_options;
-
-/**
- * @brief Sends an HTTP request to the event loop.
- * This function creates a new HTTP request and triggers a callback when the
- * request is complete. It allows for asynchronous handling of HTTP requests,
- * useful for web applications or services.
- * @param we A pointer to the ws_event_base structure.
- * @param options A pointer to a structure containing the request configuration.
- * @param callback The callback function to call when the HTTP request completes.
- * @param arg An argument to pass to the callback function.
- * @return A pointer to the newly created ws_event_handle structure if the request
- * is successfully initiated, or NULL on failure. The request result will
- * be returned asynchronously in the callback function.
- */
-ws_event_handle *ws_event_http_request(ws_event_base *we,
-                                    const ws_http_request_options *options,
-                                    ws_event_http_cb callback, void *arg);
 
 #endif
