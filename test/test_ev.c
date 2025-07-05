@@ -6,8 +6,8 @@
 #include <signal.h> // For signal handling
 #include <unistd.h> // For sleep
 
-#include "ws_common.h"
-#include "ws_event.h"
+#include <ws_log.h>
+#include <ws_event.h>
 
 // Global event loop pointer for signal handler
 ws_event_loop_t *g_main_loop = NULL;

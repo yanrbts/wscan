@@ -87,7 +87,7 @@ static void s_event_timer_cb(evutil_socket_t fd, short events, void *arg) {
 }
 
 ws_event_loop_t *ws_event_loop_new(void) {
-    ws_event_loop_t *loop = zcalloc(1, sizeof(ws_event_loop_t));
+    ws_event_loop_t *loop = zcalloc(sizeof(ws_event_loop_t));
     if (!loop) {
         ws_log_error("Failed to allocate memory for ws_event_loop_t.");
         return NULL;
@@ -161,7 +161,7 @@ static ws_event_t *s_ws_event_new_common(ws_event_loop_t *loop, evutil_socket_t 
         return NULL;
     }
 
-    ws_event_t *ev = zcalloc(1, sizeof(ws_event_t));
+    ws_event_t *ev = zcalloc(sizeof(ws_event_t));
     if (!ev) {
         ws_log_error("Failed to allocate memory for ws_event_t.");
         return NULL;
