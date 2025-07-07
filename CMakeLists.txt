@@ -32,7 +32,7 @@
  enable_language(C)
  enable_testing()
 
- set(CMAKE_C_FLAGS_DEBUG "-g -O0")  # -g 生成调试信息, -O0 关闭优化
+ set(CMAKE_C_FLAGS_DEBUG "-g -O0 -Wall -Wextra")  # -g 生成调试信息, -O0 关闭优化
  set(CMAKE_BUILD_TYPE Debug)
  add_definitions (-DCMAKE -DVERSION=\"${VERSION}\")
  # 添加 include 目录

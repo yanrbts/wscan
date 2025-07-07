@@ -111,7 +111,7 @@ void ws_event_loop_free(ws_event_loop_t *loop) {
      * if you event_free() each event, but it's good practice to ensure. */
     if (loop->base) {
         event_base_free(loop->base);
-        ws_log_info("Libevent event_base freed.");
+        // ws_log_info("Libevent event_base freed.");
     }
     zfree(loop);
     ws_log_info("Event loop freed.");
@@ -123,7 +123,7 @@ bool ws_event_loop_dispatch(ws_event_loop_t *loop) {
         return false;
     }
 
-    ws_log_info("Starting event loop dispatch.");
+    // ws_log_info("Starting event loop dispatch.");
     loop->stop_flag = false; // Reset stop flag before dispatching
 
     /* event_base_dispatch returns:
@@ -151,7 +151,6 @@ void ws_event_loop_stop(ws_event_loop_t *loop) {
     /* event_base_loopbreak() is thread-safe 
      * and causes event_base_dispatch() to return */
     event_base_loopbreak(loop->base);
-    ws_log_info("Event loop stop requested.");
 }
 
 static ws_event_t *s_ws_event_new_common(ws_event_loop_t *loop, evutil_socket_t fd, 
@@ -192,7 +191,7 @@ static ws_event_t *s_ws_event_new_common(ws_event_loop_t *loop, evutil_socket_t 
         return NULL;
     }
 
-    ws_log_info("New ws_event_t %p created (fd %d, flags %d).", (void*)ev, fd, (int)flags);
+    // ws_log_info("New ws_event_t %p created (fd %d, flags %d).", (void*)ev, fd, (int)flags);
     return ev;
 }
 
@@ -254,7 +253,7 @@ bool ws_event_add(ws_event_t *event) {
         tv.tv_sec = current_timeout_ms / 1000;
         tv.tv_usec = (current_timeout_ms % 1000) * 1000;
         ptv = &tv;
-        ws_log_debug("Adding timer event for %ld ms.", current_timeout_ms);
+        // ws_log_debug("Adding timer event for %ld ms.", current_timeout_ms);
     }
 
     if (event_add(event->ev, ptv) == -1) {
@@ -262,7 +261,7 @@ bool ws_event_add(ws_event_t *event) {
         return false;
     }
     
-    ws_log_debug("Event %p added to loop.", (void*)event);
+    // ws_log_debug("Event %p added to loop.", (void*)event);
     return true;
 }
 
@@ -277,7 +276,7 @@ bool ws_event_del(ws_event_t *event) {
         return false;
     }
 
-    ws_log_debug("Event %p deleted from loop.", (void*)event);
+    // ws_log_debug("Event %p deleted from loop.", (void*)event);
     return true;
 }
 
@@ -287,7 +286,7 @@ void ws_event_free(ws_event_t *event) {
     // Ensure event is not active before freeing its libevent counterpart
     // event_del returns 0 if event was active and removed, 1 if not active, -1 on error
     if (event_del(event->ev) != -1) {
-        ws_log_debug("Event %p was inactive or successfully deleted before free.", (void*)event);
+        // ws_log_debug("Event %p was inactive or successfully deleted before free.", (void*)event);
     }
 
     if (event->ev) {
@@ -296,5 +295,5 @@ void ws_event_free(ws_event_t *event) {
     }
 
     zfree(event);
-    ws_log_debug("ws_event_t %p freed.", (void*)event);
+    // ws_log_debug("ws_event_t %p freed.", (void*)event);
 }

@@ -84,6 +84,7 @@ static ws_http_request_t *s_http_request_init(ws_http_client_t *client,
 /* This callback is called by Libcurl to tell us when the next timeout should occur.
  * We then arm our ws_event timer. */
 static int s_curl_timer_cb(CURLM *multi, long timeout_ms, void *userp) {
+    (void)multi;
     ws_http_client_t *client = (ws_http_client_t *)userp;
 
     /* Delete existing timer if it's active */
@@ -128,7 +129,7 @@ static void s_curl_multi_timer_cb(void *user_data) {
         return;
     }
 
-    ws_log_debug("Libcurl multi timer fired. Checking for activity...");
+    // ws_log_debug("Libcurl multi timer fired. Checking for activity...");
 
     int still_running;
     CURLMcode mc = curl_multi_socket_action(client->multi_handle, CURL_SOCKET_TIMEOUT, 0, &still_running);
@@ -143,9 +144,10 @@ static void s_curl_multi_timer_cb(void *user_data) {
  * We then add/remove/modify our ws_event I/O events. */
 static int s_curl_socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp) {
     (void)easy;
+    (void)socketp;
     ws_http_client_t *client = (ws_http_client_t *)userp;
 
-    ws_log_debug("s_curl_socket_cb: socket=%d, what=%d", (int)s, what);
+    // ws_log_debug("s_curl_socket_cb: socket=%d, what=%d", (int)s, what);
 
     if (s < 0 || s >= MAX_FDS_FOR_HTTP_EVENTS) {
         ws_log_error("Socket FD %d out of bounds for MAX_FDS_FOR_HTTP_EVENTS (%d). Increase MAX_FDS_FOR_HTTP_EVENTS.", 
@@ -154,7 +156,7 @@ static int s_curl_socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, 
     }
 
     // Determine current flags for this socket from our internal tracking
-    int current_flags = client->socket_events[s].running_flags;
+    // int current_flags = client->socket_events[s].running_flags;
 
     switch (what) {
         case CURL_POLL_NONE:
@@ -250,7 +252,7 @@ static void s_curl_multi_socket_cb(evutil_socket_t fd, short events, void *user_
         // For more robust error handling, consider EV_CLOSED and other specific events.
     }
 
-    ws_log_debug("Libcurl multi socket FD %d activity (events %d).", (int)fd, (int)events);
+    // ws_log_debug("Libcurl multi socket FD %d activity (events %d).", (int)fd, (int)events);
 
     int still_running;
     CURLMcode mc = curl_multi_socket_action(client->multi_handle, fd, curl_action_flags, &still_running);
@@ -330,7 +332,6 @@ static void s_free_http_request(ws_http_request_t *req) {
         req->headers = NULL;
     }
     zfree(req);
-    ws_log_debug("ws_http_request_t %p freed.", (void*)req);
 }
 
 // Common initialization for a new HTTP request
@@ -365,16 +366,16 @@ static ws_http_request_t *s_http_request_init(ws_http_client_t *client,
     req->cancelled = false;
 
     // Set common curl options
-    curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req); // Store our request object
+    curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);                               // Store our request object
     curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, s_curl_write_data_cb);
-    curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req); // Pass our request object
+    curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req);                             // Pass our request object
     curl_easy_setopt(req->easy_handle, CURLOPT_HEADERFUNCTION, s_curl_write_header_cb);
-    curl_easy_setopt(req->easy_handle, CURLOPT_HEADERDATA, req); // Pass our request object
-    curl_easy_setopt(req->easy_handle, CURLOPT_NOSIGNAL, 1L); // Crucial for multi-threaded apps
-    curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L); // Follow redirects
-    curl_easy_setopt(req->easy_handle, CURLOPT_VERBOSE, 0L); // Set to 1L for libcurl debug info
+    curl_easy_setopt(req->easy_handle, CURLOPT_HEADERDATA, req);                            // Pass our request object
+    curl_easy_setopt(req->easy_handle, CURLOPT_NOSIGNAL, 1L);                               // Crucial for multi-threaded apps
+    curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);                         // Follow redirects
+    curl_easy_setopt(req->easy_handle, CURLOPT_VERBOSE, 0L);                                // Set to 1L for libcurl debug info
 
-    ws_log_debug("New ws_http_request_t %p initialized.", (void*)req);
+    // ws_log_debug("New ws_http_request_t %p initialized.", (void*)req);
     return req;
 }
 

@@ -72,7 +72,6 @@ static time_t ws_parse_http_date(const char *date_str) {
 
     struct tm tm = {0};
     char wkday[10], month[4], tz[4];
-    char tmp[40]; // scratch buffer
     int day, year, hour, min, sec;
 
     // --- Try RFC 1123: "Sun, 06 Nov 1994 08:49:37 GMT" ---
