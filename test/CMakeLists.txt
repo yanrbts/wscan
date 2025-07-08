@@ -41,5 +41,7 @@ foreach(test_src ${TEST_SOURCES})
         ${LIBEVENT_LIBRARIES}         # 核心 Libevent 库
         ${OPENSSL_LIBRARIES}          # OpenSSL 库
         ${CURL_LIBRARIES}             # libcurl 库
+        lexbor
+        quickjs
     )
 endforeach()

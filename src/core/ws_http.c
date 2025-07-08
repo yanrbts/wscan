@@ -301,8 +301,8 @@ static void s_process_curl_messages(ws_http_client_t *client) {
             if (req && !req->cancelled) {
                 // Get HTTP response code
                 curl_easy_getinfo(easy_handle, CURLINFO_RESPONSE_CODE, &http_code);
-                ws_log_info("Request %p completed. HTTP Code: %ld, Curl Code: %d (%s)",
-                            (void*)req, http_code, (int)result, curl_easy_strerror(result));
+                // ws_log_info("Request %p completed. HTTP Code: %ld, Curl Code: %d (%s)",
+                //             (void*)req, http_code, (int)result, curl_easy_strerror(result));
 
                 if (req->complete_cb) {
                     req->complete_cb(req, http_code, result, req->user_data);

@@ -14,9 +14,9 @@ void my_page_callback(ws_crawler_t *crawler, const char *url, long http_code,
     (void)crawler; // Unused parameter
     (void)user_data; // Unused parameter
     ws_log_info("Page crawled successfully: %s (HTTP %ld)", url, http_code);
-    ws_log_debug("Content snippet (first 100 bytes): %.*s%s",
-                 (int) (content_len > 100 ? 100 : content_len), content,
-                 content_len > 100 ? "..." : "");
+    // ws_log_debug("Content snippet (first 100 bytes): %.*s%s",
+    //              (int) (content_len > 100 ? 100 : content_len), content,
+    //              content_len > 100 ? "..." : "");
 
     // Example: Stop after crawling a specific page for testing
     // if (strstr(url, "example.com/some_specific_page")) {

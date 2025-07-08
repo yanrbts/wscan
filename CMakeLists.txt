@@ -40,5 +40,26 @@
  include_directories(${CMAKE_SOURCE_DIR}/src/defines)
  include_directories(${CMAKE_SOURCE_DIR}/test/Unity)
  
+ # 添加 lexbor 子目录并包含头文件
+ add_subdirectory(lexbor)
+ include_directories(${CMAKE_SOURCE_DIR}/lexbor/source)
+
+ # 为 quickjs (使用 Makefile) 添加自定义构建目标
+ include_directories(${CMAKE_SOURCE_DIR}/quickjs)
+ add_custom_target(build_quickjs
+     COMMAND make libquickjs.a
+     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/quickjs
+     COMMENT "Building QuickJS static library (libquickjs.a)"
+ )
+ 
+ # 创建一个 IMPORTED 库目标来代表 libquickjs.a
+ add_library(quickjs STATIC IMPORTED)
+ set_target_properties(quickjs PROPERTIES
+     IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/quickjs/libquickjs.a
+ )
+ 
+ # 添加依赖，确保在使用 quickjs 库之前，它已经被 build_quickjs 目标构建出来
+ add_dependencies(quickjs build_quickjs)
+
  add_subdirectory(src)
  add_subdirectory(test)
