@@ -60,8 +60,6 @@ static int add_link_to_array(extracted_links_t *links_data, const char *link) {
     return 0;
 }
 
-
-
 static char *read_file(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f) {

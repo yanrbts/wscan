@@ -45,7 +45,7 @@
  include_directories(${CMAKE_SOURCE_DIR}/lexbor/source)
 
  # 为 quickjs (使用 Makefile) 添加自定义构建目标
- include_directories(${CMAKE_SOURCE_DIR}/quickjs)
+ include_directories(${CMAKE_SOURCE_DIR})
  add_custom_target(build_quickjs
      COMMAND make libquickjs.a
      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/quickjs

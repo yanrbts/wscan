@@ -209,36 +209,33 @@ static void ws_crawler_process_extracted_links(ws_crawler_t *crawler, const char
         return;
     }
 
-    // ws_log_debug("Processing %zu extracted links from %s", links_data->count, base_url);
-
-    // This is a placeholder for robust URL resolution.
-    // In a real-world crawler, you would use a dedicated URL parsing library
-    // (e.g., a function that can resolve relative URLs against a base URL,
-    // handle '..' segments, remove fragments, canonicalize query parameters).
-    // For now, we'll use a very basic approach similar to the old one.
-
-    // A buffer to build absolute URLs. Needs to be large enough.
-    // Consider dynamic allocation if URLs can be very long.
+    /* This is a placeholder for robust URL resolution.
+     * In a real-world crawler, you would use a dedicated URL parsing library
+     * (e.g., a function that can resolve relative URLs against a base URL,
+     * handle '..' segments, remove fragments, canonicalize query parameters).
+     * For now, we'll use a very basic approach similar to the old one.
+     * 
+     * A buffer to build absolute URLs. Needs to be large enough.
+     * Consider dynamic allocation if URLs can be very long. */
     char resolved_url_buffer[2048]; 
 
     // Find the protocol and host part of the base_url once for efficiency
     const char *proto_end = strstr(base_url, "://");
-    const char *host_root_part = NULL; // e.g., "http://example.com"
+    const char *host_root_part = NULL;
     size_t host_root_len = 0;
 
     if (proto_end) {
-        proto_end += 3; // Move past "://"
+        // Move past "://"
+        proto_end += 3; 
+        // Base URL is just a domain, e.g., "http://example.com"
+        host_root_part = base_url;  
         const char *host_end = strchr(proto_end, '/');
         if (host_end) {
-            host_root_part = base_url; // Start from base_url beginning
             host_root_len = host_end - base_url;
         } else {
-            // Base URL is just a domain, e.g., "http://example.com"
-            host_root_part = base_url;
             host_root_len = strlen(base_url);
         }
     }
-
 
     for (size_t i = 0; i < links_data->count; i++) {
         const char *extracted_link = links_data->links[i];
@@ -249,7 +246,6 @@ static void ws_crawler_process_extracted_links(ws_crawler_t *crawler, const char
 
         // Basic check for fragment-only links (e.g., #section)
         if (extracted_link[0] == '#') {
-            // ws_log_debug("Skipping fragment-only link: %s", extracted_link);
             continue;
         }
         
@@ -273,11 +269,10 @@ static void ws_crawler_process_extracted_links(ws_crawler_t *crawler, const char
                 ws_log_warn("Could not resolve root-relative link '%s' from base URL '%s' (no valid host found).", extracted_link, base_url);
             }
         } else {
-            // Path-relative URL (e.g., "page.html", "../css/style.css")
-            // This is the most complex. Requires proper URL parsing to resolve '..' etc.
-            // For this basic example, we will simply append it if base_url ends with '/' or resolve manually
-            // A more robust solution would involve libcurl's URL API or similar.
-
+            /* Path-relative URL (e.g., "page.html", "../css/style.css")
+             * This is the most complex. Requires proper URL parsing to resolve '..' etc.
+             * For this basic example, we will simply append it if base_url ends with '/' or resolve manually
+             * A more robust solution would involve libcurl's URL API or similar. */
             char *temp_base_url_copy = strdup(base_url);
             if (!temp_base_url_copy) {
                 ws_log_error("Failed to duplicate base_url for relative link resolution.");
@@ -286,8 +281,9 @@ static void ws_crawler_process_extracted_links(ws_crawler_t *crawler, const char
 
             char *last_slash = strrchr(temp_base_url_copy, '/');
             if (last_slash) {
-                // If the base URL has a path component, find its directory
-                *(last_slash + 1) = '\0'; // Truncate to the directory part (e.g., http://a.com/path/)
+                /* If the base URL has a path component, find its directory
+                 * Truncate to the directory part (e.g., http://a.com/path/) */
+                *(last_slash + 1) = '\0'; 
             } else {
                 // If no slash after host (e.g., http://example.com), just use as is
                 // This case is less common for relative links, but handles it.
@@ -333,13 +329,15 @@ static void ws_crawl_http_header_cb(const char *header, void *userdata) {
  */
 static void ws_crawl_http_data_cb(const char *ptr, size_t size, void *userdata) {
     ws_crawl_task_t *task = (ws_crawl_task_t *)userdata;
+
     if (!task || !task->content_buffer) {
         ws_log_error("Invalid task or content buffer in data callback.");
-        return; // Indicate error to libcurl
+        return;
     }
+
     if (!ws_buffer_append(task->content_buffer, ptr, size)) {
         ws_log_error("Failed to append data to buffer for URL: %s", task->url);
-        return; // Indicate error
+        return;
     }
 }
 
@@ -372,14 +370,13 @@ static void ws_crawl_http_complete_cb(ws_http_request_t *req, long http_code, CU
 
             // Extract links from the crawled page
             if (task->content_buffer->buf && task->content_buffer->len > 0) {
-                // ws_log_debug("Calling ws_extract_links for URL: %s", task->url);
                 extracted_links_t* links = ws_extract_links(task->content_buffer->buf, task->content_buffer->len);
-
                 if (links) {
                     ws_log_info("Extracted %zu links from %s", links->count, task->url);
                     // Process the extracted links (e.g., add to queue, filter, normalize)
                     ws_crawler_process_extracted_links(crawler, task->url, links);
-                    ws_free_extracted_links(links); // Free the extracted links data after processing
+                    // Free the extracted links data after processing
+                    ws_free_extracted_links(links); 
                 } else {
                     ws_log_warn("Failed to extract links from %s or no links found.", task->url);
                 }
@@ -393,7 +390,8 @@ static void ws_crawl_http_complete_cb(ws_http_request_t *req, long http_code, CU
             }
         }
     } else {
-        ws_log_error("Failed to crawl URL: %s (Curl error: %d - %s)", task->url, curl_code, curl_easy_strerror(curl_code));
+        ws_log_error("Failed to crawl URL: %s (Curl error: %d - %s)", 
+                    task->url, curl_code, curl_easy_strerror(curl_code));
         if (crawler->error_callback) {
             crawler->error_callback(crawler, task->url, curl_code, crawler->user_data);
         }
@@ -459,14 +457,12 @@ static void s_crawler_dispatch_requests(void *user_data) {
             continue;
         }
 
-        // ws_log_debug("Dispatching request for URL: %s", task->url);
         // Note: ws_http_get takes ownership of task. It will be freed in ws_crawl_http_complete_cb
         if (!ws_http_get(crawler->http_client, task->url,
                          ws_crawl_http_header_cb,
                          ws_crawl_http_data_cb,
                          ws_crawl_http_complete_cb, task)) {
             ws_log_error("Failed to start HTTP GET for URL: %s", task->url);
-            // Free task if HTTP request failed to start
             ws_crawl_task_free(task); 
             continue;
         }
