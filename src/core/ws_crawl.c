@@ -362,7 +362,9 @@ static void ws_crawl_http_complete_cb(ws_http_request_t *req, long http_code, CU
             ws_log_info("Successfully crawled URL: %s (HTTP %ld)", task->url, http_code);
             if (crawler->page_callback) {
                 // Ensure content is null-terminated for string compatibility if needed by user
-                if (task->content_buffer->buf) task->content_buffer->buf[task->content_buffer->len] = '\0';
+                if (task->content_buffer->buf) 
+                    task->content_buffer->buf[task->content_buffer->len] = '\0';
+                
                 crawler->page_callback(crawler, task->url, http_code,
                                         task->content_buffer->buf, task->content_buffer->len,
                                         crawler->user_data);

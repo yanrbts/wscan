@@ -230,6 +230,25 @@ ws_event_t *ws_event_new_timer(ws_event_loop_t *loop, long timeout_ms, bool is_p
     return ev;
 }
 
+bool ws_event_update_timer(ws_event_t *event, long new_timeout_ms) {
+    if (!event || !event->ev) return false;
+
+    struct timeval tv;
+    tv.tv_sec = new_timeout_ms / 1000;
+    tv.tv_usec = (new_timeout_ms % 1000) * 1000;
+
+    if (event_pending(event->ev, EV_TIMEOUT, NULL)) {
+        event_del(event->ev);
+    }
+
+    if (event_add(event->ev, &tv) != 0) {
+        ws_log_error("Failed to update timer event %p with new timeout %ld ms.", (void*)event, new_timeout_ms);
+        return false;
+    }
+    return true;
+}
+
+
 bool ws_event_add(ws_event_t *event) {
     if (!event || !event->ev) {
         ws_log_error("Cannot add NULL or invalid ws_event_t.");
@@ -253,15 +272,12 @@ bool ws_event_add(ws_event_t *event) {
         tv.tv_sec = current_timeout_ms / 1000;
         tv.tv_usec = (current_timeout_ms % 1000) * 1000;
         ptv = &tv;
-        // ws_log_debug("Adding timer event for %ld ms.", current_timeout_ms);
     }
 
     if (event_add(event->ev, ptv) == -1) {
         ws_log_error("Failed to add event %p to event loop.", (void*)event);
         return false;
     }
-    
-    // ws_log_debug("Event %p added to loop.", (void*)event);
     return true;
 }
 

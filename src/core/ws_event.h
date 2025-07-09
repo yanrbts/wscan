@@ -114,6 +114,15 @@ ws_event_t *ws_event_new_io(ws_event_loop_t *loop, evutil_socket_t fd, short fla
 ws_event_t *ws_event_new_timer(ws_event_loop_t *loop, long timeout_ms, bool is_persistent,
                                ws_timer_callback_fn callback, void *user_data);
 
+/** 
+ * @brief Updates the timeout of an existing timer event.
+ * This can be used to change the timeout dynamically.
+ * @param event The timer event to update.
+ * @param new_timeout_ms The new timeout duration in milliseconds.
+ * @return true on success, false if the event is not a timer or on error.
+ */
+bool ws_event_update_timer(ws_event_t *event, long new_timeout_ms);
+
 /**
  * @brief Adds an event to the event loop, making it active.
  * @param event The event to add.

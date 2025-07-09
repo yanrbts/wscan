@@ -86,35 +86,46 @@ static ws_http_request_t *s_http_request_init(ws_http_client_t *client,
 static int s_curl_timer_cb(CURLM *multi, long timeout_ms, void *userp) {
     (void)multi;
     ws_http_client_t *client = (ws_http_client_t *)userp;
-
-    /* Delete existing timer if it's active */
-    if (client->timer_event) {
-        ws_event_del(client->timer_event);
-        ws_event_free(client->timer_event);
-        client->timer_event = NULL;
-    }
-
+    /**
+     *  if timeout_ms < 0, it means:
+     *  - No timeout is pending, or
+     *  - Libcurl wants to disable the timer.
+     *  In this case, we simply log a warning and do not create a new timer.
+     *  If timeout_ms is == 0, Trigger once immediately
+     *  if timeout_ms > 0, it means:
+     *  - Libcurl wants us to set a timer for the specified milliseconds.
+     *  - We will create a new timer event that will call our s_curl_multi_timer_cb
+     *    when the timeout expires.
+     *  - This is a one-shot timer; it will not repeat unless libcurl calls
+     *    this callback again with a new timeout.
+     */
     if (timeout_ms >= 0) {
-        /* Arm a new timer
-         * Libcurl's timer is always one-shot; it'll call this callback again if needed.*/
-        client->timer_event = ws_event_new_timer(client->event_loop, timeout_ms, false,
-                                                  s_curl_multi_timer_cb, client);
-        
-        if (!client->timer_event) {
-            ws_log_error("Failed to create libcurl multi timer event.");
-            return -1;
-        }
+        if (client->timer_event) {
+            ws_event_update_timer(client->timer_event, timeout_ms);
+        } else {
+            /* Arm a new timer
+             * Libcurl's timer is always one-shot; it'll call this callback again if needed.*/
+            client->timer_event = ws_event_new_timer(client->event_loop, timeout_ms, false,
+                                                    s_curl_multi_timer_cb, client);
+            
+            if (!client->timer_event) {
+                ws_log_error("Failed to create libcurl multi timer event.");
+                return -1;
+            }
 
-        if (!ws_event_add(client->timer_event)) {
-            ws_log_error("Failed to add libcurl multi timer event.");
-            ws_event_free(client->timer_event);
-            client->timer_event = NULL;
-            return -1;
+            if (!ws_event_add(client->timer_event)) {
+                ws_log_error("Failed to add libcurl multi timer event.");
+                ws_event_free(client->timer_event);
+                client->timer_event = NULL;
+                return -1;
+            }
         }
     } else {
         /* timeout_ms == -1 means no timeout is pending, 
          * or it wants to disable the timer. */
-        ws_log_warn("Libcurl requested timer disable.");
+        if (client->timer_event) {
+            ws_event_del(client->timer_event);
+        }
     }
 
     return 0;
@@ -147,16 +158,11 @@ static int s_curl_socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, 
     (void)socketp;
     ws_http_client_t *client = (ws_http_client_t *)userp;
 
-    // ws_log_debug("s_curl_socket_cb: socket=%d, what=%d", (int)s, what);
-
     if (s < 0 || s >= MAX_FDS_FOR_HTTP_EVENTS) {
         ws_log_error("Socket FD %d out of bounds for MAX_FDS_FOR_HTTP_EVENTS (%d). Increase MAX_FDS_FOR_HTTP_EVENTS.", 
                     (int)s, MAX_FDS_FOR_HTTP_EVENTS);
         return -1;
     }
-
-    // Determine current flags for this socket from our internal tracking
-    // int current_flags = client->socket_events[s].running_flags;
 
     switch (what) {
         case CURL_POLL_NONE:
@@ -252,8 +258,6 @@ static void s_curl_multi_socket_cb(evutil_socket_t fd, short events, void *user_
         // For more robust error handling, consider EV_CLOSED and other specific events.
     }
 
-    // ws_log_debug("Libcurl multi socket FD %d activity (events %d).", (int)fd, (int)events);
-
     int still_running;
     CURLMcode mc = curl_multi_socket_action(client->multi_handle, fd, curl_action_flags, &still_running);
     if (mc != CURLM_OK) {
@@ -301,8 +305,6 @@ static void s_process_curl_messages(ws_http_client_t *client) {
             if (req && !req->cancelled) {
                 // Get HTTP response code
                 curl_easy_getinfo(easy_handle, CURLINFO_RESPONSE_CODE, &http_code);
-                // ws_log_info("Request %p completed. HTTP Code: %ld, Curl Code: %d (%s)",
-                //             (void*)req, http_code, (int)result, curl_easy_strerror(result));
 
                 if (req->complete_cb) {
                     req->complete_cb(req, http_code, result, req->user_data);
@@ -375,11 +377,8 @@ static ws_http_request_t *s_http_request_init(ws_http_client_t *client,
     curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);                         // Follow redirects
     curl_easy_setopt(req->easy_handle, CURLOPT_VERBOSE, 0L);                                // Set to 1L for libcurl debug info
 
-    // ws_log_debug("New ws_http_request_t %p initialized.", (void*)req);
     return req;
 }
-
-// --- Public API Implementations ---
 
 ws_http_client_t *ws_http_client_new(ws_event_loop_t *loop) {
     if (!loop) {
@@ -405,8 +404,8 @@ ws_http_client_t *ws_http_client_new(ws_event_loop_t *loop) {
     if (!client->multi_handle) {
         ws_log_error("Failed to create CURL multi handle.");
         zfree(client);
-        // Note: curl_global_cleanup() should be called, but it's hard to track
-        // if this is the only client or not. Typically done at app shutdown.
+        /* Note: curl_global_cleanup() should be called, but it's hard to track
+         * if this is the only client or not. Typically done at app shutdown. */
         return NULL;
     }
 
