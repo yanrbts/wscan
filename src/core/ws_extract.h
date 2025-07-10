@@ -83,7 +83,8 @@ char *ws_extract_data(const char *html_content, size_t html_len, const char *scr
  * @return Pointer to an extracted_links_t structure containing all found links,
  *         or NULL on failure. The caller must free the result with ws_free_extracted_links().
  */
-extracted_links_t *ws_extract_links(const char *html_content, size_t html_len);
+extracted_links_t *ws_extract_links(const char *html_content, size_t html_len, 
+                                    const char *content_type, const char *base_url);
 
 /**
  * @brief Free an extracted_links_t structure and all its internal memory.

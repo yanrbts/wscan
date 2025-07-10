@@ -28,6 +28,8 @@
 #ifndef __WS_UTIL_H__
 #define __WS_UTIL_H__
 
+#include <stdbool.h>
+
 #define UNUSED(x) ((void)(x))
 
 char *ws_trim_whitespace(char *str);
@@ -39,5 +41,18 @@ char *ws_trim_whitespace(char *str);
  * s1 == s2 return 0
  */
 int ws_strcasecmp(const char *s1, const char *s2);
+
+/**
+ * @brief Check if a string starts with a given prefix (case-insensitive).
+ *
+ * This function compares the beginning of the string 'str' with the string 'prefix',
+ * ignoring the case of alphabetic characters. It returns true if 'str' starts with
+ * 'prefix' (case-insensitive), and false otherwise.
+ *
+ * @param str    The input string to check.
+ * @param prefix The prefix string to compare against.
+ * @return true if 'str' starts with 'prefix' (case-insensitive), false otherwise.
+ */
+bool ws_strcheck_prefix(const char *str, const char *prefix);
 
 #endif

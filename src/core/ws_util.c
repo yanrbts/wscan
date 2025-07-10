@@ -28,7 +28,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h> 
+#include <ctype.h>
+#include <ws_util.h>
 
 char *ws_trim_whitespace(char *str) {
     char *end; 
@@ -62,3 +63,13 @@ int ws_strcasecmp(const char *s1, const char *s2) {
     return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
 }
 
+bool ws_strcheck_prefix(const char *str, const char *prefix) {
+    while (*prefix) {
+        if (tolower((unsigned char)*str) != tolower((unsigned char)*prefix)) {
+            return false;
+        }
+        str++;
+        prefix++;
+    }
+    return true;
+}

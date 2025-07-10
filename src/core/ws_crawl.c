@@ -31,6 +31,7 @@
 #include <stdbool.h> // For bool
 #include <ws_malloc.h> 
 #include <ws_log.h>
+#include <ws_util.h>
 #include <ws_crawl.h>
 #include <ws_extract.h>
 
@@ -49,7 +50,8 @@ typedef struct ws_url_node {
 typedef struct ws_crawl_task {
     ws_crawler_t *crawler;
     char *url;
-    ws_buffer_t *content_buffer; // Buffer to accumulate response body
+    ws_buffer_t *content_buffer;    // Buffer to accumulate response body
+    char *content_type;             // To store the Content-Type header value
 } ws_crawl_task_t;
 
 struct ws_crawler {
@@ -311,6 +313,7 @@ static void ws_crawl_task_free(ws_crawl_task_t *task) {
     if (task->content_buffer)
         ws_buffer_free(task->content_buffer);
     if (task->url) zfree(task->url);
+    if (task->content_type) zfree(task->content_type);
     zfree(task);
 }
 
@@ -318,10 +321,34 @@ static void ws_crawl_task_free(ws_crawl_task_t *task) {
  * @brief ws_http header callback for crawl tasks.
  */
 static void ws_crawl_http_header_cb(const char *header, void *userdata) {
-    // ws_crawl doesn't typically need to process headers specifically
-    // unless for redirects, cookies, etc. which are handled by libcurl automatically
-    (void)header;
-    (void)userdata;
+    ws_crawl_task_t *task = (ws_crawl_task_t *)userdata;
+    if (!task) {
+        ws_log_warn("Header callback: Invalid task userdata.");
+        return;
+    }
+
+    const char *content_type_prefix = "Content-Type: ";
+    size_t prefix_len = strlen(content_type_prefix);
+
+    if (ws_strcheck_prefix(header, content_type_prefix)) {
+        const char *value_start = header + prefix_len;
+        // Find end of line (CRLF) and null-terminate the value
+        char *crlf = strstr(value_start, "\r\n");
+        size_t value_len = crlf ? (size_t)(crlf - value_start) : strlen(value_start);
+
+        // Free previous content_type if any
+        if (task->content_type) {
+            zfree(task->content_type);
+        }
+        
+        task->content_type = zmalloc(value_len + 1);
+        if (task->content_type) {
+            memcpy(task->content_type, value_start, value_len);
+            task->content_type[value_len] = '\0';
+        } else {
+            ws_log_error("Failed to allocate memory for content type.");
+        }
+    }
 }
 
 /**
@@ -370,11 +397,18 @@ static void ws_crawl_http_complete_cb(ws_http_request_t *req, long http_code, CU
                                         crawler->user_data);
             }
 
+            const char *content_type = task->content_type ? task->content_type : "application/octet-stream";
+
             // Extract links from the crawled page
             if (task->content_buffer->buf && task->content_buffer->len > 0) {
-                extracted_links_t* links = ws_extract_links(task->content_buffer->buf, task->content_buffer->len);
+                extracted_links_t* links = ws_extract_links(
+                    task->content_buffer->buf, 
+                    task->content_buffer->len,
+                    content_type,
+                    task->url 
+                );
                 if (links) {
-                    ws_log_info("Extracted %zu links from %s", links->count, task->url);
+                    ws_log_info("Extracted %zu links from %s (Content-Type: %s)", links->count, task->url, content_type);
                     // Process the extracted links (e.g., add to queue, filter, normalize)
                     ws_crawler_process_extracted_links(crawler, task->url, links);
                     // Free the extracted links data after processing

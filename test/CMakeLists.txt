@@ -14,6 +14,12 @@ find_package(OpenSSL REQUIRED) # 确保 OpenSSL 库也被找到
 # 查找 libcurl 库
 find_package(CURL REQUIRED)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCRE REQUIRED libpcre)
+include_directories(${PCRE_INCLUDE_DIRS})
+# ...
+# target_link_libraries(${test_name} ${PCRE_LIBRARIES})
+
 # 查找 src/core 下所有源文件
 file(GLOB CORE_SOURCES ${PROJECT_SOURCE_DIR}/src/core/*.c)
 file(GLOB TEST_SOURCES *.c)
@@ -41,6 +47,7 @@ foreach(test_src ${TEST_SOURCES})
         ${LIBEVENT_LIBRARIES}         # 核心 Libevent 库
         ${OPENSSL_LIBRARIES}          # OpenSSL 库
         ${CURL_LIBRARIES}             # libcurl 库
+        ${PCRE_LIBRARIES}             # PCRE 库
         lexbor
         quickjs
     )
