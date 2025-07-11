@@ -47,7 +47,7 @@ static lxb_html_parser_t *parser = NULL;
 
 static int add_link_to_array(extracted_links_t *links_data, const char *link) {
     if (!link) return -1;
-
+    // ws_log_warn("[Adding link: %s]", link);
     if (links_data->count >= links_data->capacity) {
         size_t new_capacity = links_data->capacity == 0 ? 4 : links_data->capacity * 2;
         char **new_links = zrealloc(links_data->links, sizeof(char*) * new_capacity);
@@ -224,6 +224,7 @@ static extracted_links_t *ws_extract_js_links_internal(const char *js_content, c
                     memcpy(path_str, current_js_content + start, end - start);
                     path_str[end - start] = '\0';
                     if (strlen(path_str) > 0 && strstr(path_str, "http") == NULL) { // Only add if not full URL
+                        ws_log_debug("Extracted path: %s", path_str);
                         add_link_to_array(temp_paths, path_str);
                     }
                     zfree(path_str);
@@ -253,6 +254,7 @@ static extracted_links_t *ws_extract_js_links_internal(const char *js_content, c
                     memcpy(path_raw, current_js_content + start, end - start);
                     path_raw[end - start] = '\0';
                     if (strlen(path_raw) > 0 && strstr(path_raw, "http") == NULL) {
+                        ws_log_debug("[Extracted path with params: %s]", path_raw);
                         add_link_to_array(temp_paths, path_raw);
                     }
                     zfree(path_raw);
@@ -282,9 +284,14 @@ static extracted_links_t *ws_extract_js_links_internal(const char *js_content, c
                     // Check if domain matches target domain
                     char *found_domain = ws_get_domain_internal(full_url_str);
                     if (found_domain && js_domain && strcmp(found_domain, js_domain) == 0) {
+                        ws_log_debug("[Extracted full URL: %s (found_domain: %s, target_domain: %s)]", 
+                                     full_url_str, found_domain, js_domain);
                         add_link_to_array(temp_full_urls, full_url_str);
                     } else {
-                         ws_log_debug("Skipping full URL out of domain: %s (found_domain: %s, target_domain: %s)", full_url_str, found_domain, js_domain);
+                         ws_log_debug(
+                            "Skipping full URL out of domain: %s (found_domain: %s, target_domain: %s)", 
+                            full_url_str, found_domain, js_domain
+                        );
                     }
                     if (found_domain) zfree(found_domain);
                     zfree(full_url_str);
@@ -295,8 +302,6 @@ static extracted_links_t *ws_extract_js_links_internal(const char *js_content, c
         pcre_free(re);
     }
 
-    // --- 组合链接 (Python 的 for url in domain_found: for path in path_found:) ---
-    // 首先添加所有直接发现的完整 URL
     for (size_t i = 0; i < temp_full_urls->count; i++) {
         add_link_to_array(links_data, temp_full_urls->links[i]);
     }
@@ -321,6 +326,7 @@ static extracted_links_t *ws_extract_js_links_internal(const char *js_content, c
                     }
                 }
                 if (new_url) {
+                    ws_log_debug("[Constructed new URL from path: %s]", new_url);
                     add_link_to_array(links_data, new_url);
                     zfree(new_url);
                 }
@@ -367,7 +373,7 @@ int ws_extract_init(void) {
     return 0;
 }
 
-char *ws_extract_data(const char *html_content, size_t html_len, const char *script_path) {
+__attribute__((unused)) char *ws_extract_data(const char *html_content, size_t html_len, const char *script_path) {
     if (!js_ctx) {
         ws_log_error("ws_extract_data: QuickJS not initialized. Call ws_extract_init() first.");
         return NULL;

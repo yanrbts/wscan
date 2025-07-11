@@ -50,5 +50,7 @@ foreach(test_src ${TEST_SOURCES})
         ${PCRE_LIBRARIES}             # PCRE 库
         lexbor
         quickjs
+        ssl                           # 手动添加 libssl
+        crypto                        # 手动添加 libcrypto
     )
 endforeach()

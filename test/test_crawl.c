@@ -13,7 +13,7 @@ void my_page_callback(ws_crawler_t *crawler, const char *url, long http_code,
                       const char *content, size_t content_len, void *user_data) {
     (void)crawler; // Unused parameter
     (void)user_data; // Unused parameter
-    ws_log_info("Page crawled successfully: %s (HTTP %ld)", url, http_code);
+    // ws_log_info("Page crawled successfully: %s (HTTP %ld)", url, http_code);
     // ws_log_debug("Content snippet (first 100 bytes): %.*s%s",
     //              (int) (content_len > 100 ? 100 : content_len), content,
     //              content_len > 100 ? "..." : "");
@@ -74,10 +74,10 @@ int main() {
     // 4. Add some initial URLs to crawl
     // It's important to choose URLs that have 'href' links for the simple link extraction to work.
     // Replace with real URLs you want to crawl for testing.
-    // ws_crawler_add_url(crawler, "https://www.jd.com/");
+    ws_crawler_add_url(crawler, "https://www.jd.com/");
     // ws_crawler_add_url(crawler, "http://www.google.com/"); // Google might block quickly
-    ws_crawler_add_url(crawler, "http://www.baidu.com/");   // Baidu might block quickly
-    ws_crawler_add_url(crawler, "http://ws.cc/"); // Dummy URL, likely won't resolve
+    ws_crawler_add_url(crawler, "https://www.baidu.com/");   // Baidu might block quickly
+    // ws_crawler_add_url(crawler, "https://www.tsnu.edu.cn/"); // Dummy URL, likely won't resolve
 
     // Add a timer to stop the crawler after some seconds for testing purposes
     // In a real application, you'd stop based on queue empty or other criteria.

@@ -510,7 +510,7 @@ static ws_http_request_t *s_http_perform_request(ws_http_client_t *client, const
     }
     s_process_curl_messages(client); // Check for immediate completions (e.g., cached)
 
-    ws_log_info("HTTP %s request for URL '%s' started.", is_post ? "POST" : "GET", url);
+    // ws_log_info("HTTP %s request for URL '%s' started.", is_post ? "POST" : "GET", url);
     return req;
 }
 

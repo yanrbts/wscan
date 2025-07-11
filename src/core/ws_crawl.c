@@ -29,6 +29,8 @@
 #include <string.h>
 #include <stdio.h> // For snprintf
 #include <stdbool.h> // For bool
+#include <ctype.h> // For isspace, tolower
+#include <curl/curl.h>
 #include <ws_malloc.h> 
 #include <ws_log.h>
 #include <ws_util.h>
@@ -197,6 +199,44 @@ static bool ws_crawler_mark_visited(ws_crawler_t *crawler, const char *url) {
     return true;
 }
 
+/* Helper function to trim leading and trailing whitespace from a string.
+ * Returns a newly allocated string, which must be freed by the caller. */
+static char* trim_whitespace(const char *str) {
+    if (!str) {
+        return NULL;
+    }
+    size_t len = strlen(str);
+    if (len == 0) {
+        return strdup(""); /* Return empty string for empty input */
+    }
+
+    /* Find start of non-whitespace */
+    const char *end = str + len - 1;
+    const char *start = str;
+    while (isspace((unsigned char)*start) && start <= end) {
+        start++;
+    }
+
+    /* Find end of non-whitespace */
+    while (end > start && isspace((unsigned char)*end)) {
+        end--;
+    }
+
+    /* Calculate trimmed length */
+    len = (end < start) ? 0 : (end - start + 1);
+
+    /* Allocate and copy the trimmed string */
+    char *trimmed_str = (char *)zmalloc(len + 1);
+    if (!trimmed_str) {
+        ws_log_error("Failed to allocate memory for trimmed string.");
+        return NULL;
+    }
+    memcpy(trimmed_str, start, len);
+    trimmed_str[len] = '\0';
+
+    return trimmed_str;
+}
+
 /**
  * @brief Handles the processing of extracted links from a crawled page.
  * This function is responsible for normalizing, filtering, and adding
@@ -205,104 +245,85 @@ static bool ws_crawler_mark_visited(ws_crawler_t *crawler, const char *url) {
  * @param base_url The base URL of the page where links were extracted.
  * @param links_data The structure containing the extracted links.
  */
-static void ws_crawler_process_extracted_links(ws_crawler_t *crawler, const char *base_url, extracted_links_t *links_data) {
+static void ws_crawler_process_curl_extracted_links(ws_crawler_t *crawler, const char *base_url, extracted_links_t *links_data) {
     if (!crawler || !base_url || !links_data) {
         ws_log_error("Invalid arguments to ws_crawler_process_extracted_links.");
         return;
     }
 
-    /* This is a placeholder for robust URL resolution.
-     * In a real-world crawler, you would use a dedicated URL parsing library
-     * (e.g., a function that can resolve relative URLs against a base URL,
-     * handle '..' segments, remove fragments, canonicalize query parameters).
-     * For now, we'll use a very basic approach similar to the old one.
-     * 
-     * A buffer to build absolute URLs. Needs to be large enough.
-     * Consider dynamic allocation if URLs can be very long. */
-    char resolved_url_buffer[2048]; 
-
-    // Find the protocol and host part of the base_url once for efficiency
-    const char *proto_end = strstr(base_url, "://");
-    const char *host_root_part = NULL;
-    size_t host_root_len = 0;
-
-    if (proto_end) {
-        // Move past "://"
-        proto_end += 3; 
-        // Base URL is just a domain, e.g., "http://example.com"
-        host_root_part = base_url;  
-        const char *host_end = strchr(proto_end, '/');
-        if (host_end) {
-            host_root_len = host_end - base_url;
-        } else {
-            host_root_len = strlen(base_url);
-        }
+    CURLU *url_handle = NULL; 
+    /* 1. Create the CURLU handle */
+    url_handle = curl_url();
+    if (!url_handle) {
+        ws_log_error("Failed to create CURLU handle. Out of memory?");
+        return;
     }
 
     for (size_t i = 0; i < links_data->count; i++) {
-        const char *extracted_link = links_data->links[i];
-        if (!extracted_link || strlen(extracted_link) == 0) {
+        const char *extracted_link_raw = links_data->links[i];
+        char *full_resolved_url = NULL; /* To store the final absolute URL */
+        CURLUcode uc;
+
+        if (!extracted_link_raw || strlen(extracted_link_raw) == 0) {
             ws_log_debug("Skipping empty extracted link.");
             continue;
         }
 
-        // Basic check for fragment-only links (e.g., #section)
-        if (extracted_link[0] == '#') {
+        /* Core logic: Set base_url first, then resolve extracted_link
+         * This step is crucial. It resets the url_handle's context to the original base_url, 
+         * ensuring that subsequent relative link resolutions are correct. */
+        uc = curl_url_set(url_handle, CURLUPART_URL, base_url, CURLU_NON_SUPPORT_SCHEME);
+        if (uc != CURLUE_OK) {
+            ws_log_error(
+                "CRITICAL: Failed to reset CURLU handle with base URL '%s': %s. Subsequent resolutions might be incorrect.", 
+                base_url, 
+                curl_url_strerror(uc)
+            );
+            break; 
+        }
+
+        /* Set the extracted_link_trimmed into url_handle.
+         * CURLU will automatically resolve it relative to the URL currently held by url_handle (i.e., base_url).
+         * IMPORTANT: Do NOT pre-encode the entire URL here. CURLU expects raw URL components.
+         * It will handle the encoding of problematic characters (like Chinese characters) internally.
+         * CURLU_DEFAULT_SCHEME: If extracted_link is //domain/path, it will use the scheme from base_url.
+         * CURLU_GUESS_SCHEME: If extracted_link is domain/path (no scheme), it will try to guess the scheme (usually http://).
+         * CURLU_NON_SUPPORT_SCHEME: Allows parsing non-HTTP/HTTPS schemes like mailto:. */
+        uc = curl_url_set(url_handle, CURLUPART_URL, extracted_link_raw,
+                          CURLU_DEFAULT_SCHEME | CURLU_GUESS_SCHEME | CURLU_PATH_AS_IS 
+                          | CURLU_NON_SUPPORT_SCHEME | CURLU_ALLOW_SPACE | CURLU_URLENCODE);
+        
+        if (uc != CURLUE_OK) {
+            ws_log_warn("Failed to set extracted link '%s' into CURLU handle for resolution (base: '%s'): %s",
+                        extracted_link_raw, base_url, curl_url_strerror(uc));
+            continue; 
+        }
+
+        /* 4. Get the full resolved URL string from the handle */
+        uc = curl_url_get(url_handle, CURLUPART_URL, &full_resolved_url, 0);
+        if (uc != CURLUE_OK || !full_resolved_url) {
+            ws_log_warn("Failed to get full resolved URL for '%s' (base: '%s'): %s",
+                        extracted_link_raw, base_url, curl_url_strerror(uc));
             continue;
         }
-        
-        bool is_absolute = (strstr(extracted_link, "http://") == extracted_link ||
-                            strstr(extracted_link, "https://") == extracted_link);
 
-        if (is_absolute) {
-            // Already an absolute URL, add it directly
-            ws_crawler_add_url(crawler, extracted_link);
-        } else if (extracted_link[0] == '/') {
-            // Root-relative URL (e.g., /path/to/page.html)
-            if (host_root_part) {
-                int n = snprintf(resolved_url_buffer, sizeof(resolved_url_buffer), "%.*s%s",
-                                 (int)host_root_len, host_root_part, extracted_link);
-                if (n < 0 || n >= (int)sizeof(resolved_url_buffer)) {
-                    ws_log_warn("Resolved URL truncated or snprintf error for root-relative link '%s': %d", extracted_link, n);
-                    resolved_url_buffer[sizeof(resolved_url_buffer) - 1] = '\0';
-                }
-                ws_crawler_add_url(crawler, resolved_url_buffer);
-            } else {
-                ws_log_warn("Could not resolve root-relative link '%s' from base URL '%s' (no valid host found).", extracted_link, base_url);
-            }
-        } else {
-            /* Path-relative URL (e.g., "page.html", "../css/style.css")
-             * This is the most complex. Requires proper URL parsing to resolve '..' etc.
-             * For this basic example, we will simply append it if base_url ends with '/' or resolve manually
-             * A more robust solution would involve libcurl's URL API or similar. */
-            char *temp_base_url_copy = strdup(base_url);
-            if (!temp_base_url_copy) {
-                ws_log_error("Failed to duplicate base_url for relative link resolution.");
-                continue;
-            }
+        /* 5. Add the resolved absolute URL to the crawler queue */
+        /* Log the raw link for debugging, but add the resolved one. */
+        // ws_log_debug("Resolved link: Original '%s' -> Absolute '%s'", extracted_link_raw, full_resolved_url);
+        ws_crawler_add_url(crawler, full_resolved_url);
 
-            char *last_slash = strrchr(temp_base_url_copy, '/');
-            if (last_slash) {
-                /* If the base URL has a path component, find its directory
-                 * Truncate to the directory part (e.g., http://a.com/path/) */
-                *(last_slash + 1) = '\0'; 
-            } else {
-                // If no slash after host (e.g., http://example.com), just use as is
-                // This case is less common for relative links, but handles it.
-            }
-            
-            // Build the full URL
-            int n = snprintf(resolved_url_buffer, sizeof(resolved_url_buffer), "%s%s",
-                             temp_base_url_copy, extracted_link);
-            if (n < 0 || n >= (int)sizeof(resolved_url_buffer)) {
-                ws_log_warn("Resolved URL truncated or snprintf error for path-relative link '%s': %d", extracted_link, n);
-                resolved_url_buffer[sizeof(resolved_url_buffer) - 1] = '\0';
-            }
-            ws_crawler_add_url(crawler, resolved_url_buffer);
-            zfree(temp_base_url_copy); // Free the duplicated base URL
-        }
+        /* 6. Free the string returned by curl_url_get */
+        curl_free(full_resolved_url);
+        full_resolved_url = NULL;
+
+    }
+
+    /* Clean up the CURLU handle at the end of the function */
+    if (url_handle) {
+        curl_url_cleanup(url_handle);
     }
 }
+
 
 /**
  * @brief Frees a crawling task and its associated resources.
@@ -408,9 +429,9 @@ static void ws_crawl_http_complete_cb(ws_http_request_t *req, long http_code, CU
                     task->url 
                 );
                 if (links) {
-                    ws_log_info("Extracted %zu links from %s (Content-Type: %s)", links->count, task->url, content_type);
+                    // ws_log_info("Extracted %zu links from %s (Content-Type: %s)", links->count, task->url, content_type);
                     // Process the extracted links (e.g., add to queue, filter, normalize)
-                    ws_crawler_process_extracted_links(crawler, task->url, links);
+                    ws_crawler_process_curl_extracted_links(crawler, task->url, links);
                     // Free the extracted links data after processing
                     ws_free_extracted_links(links); 
                 } else {
@@ -504,14 +525,13 @@ static void s_crawler_dispatch_requests(void *user_data) {
         }
         
         crawler->active_requests++;
-        ws_log_debug("Active requests: %d, URLs in queue: %zu", crawler->active_requests, crawler->url_queue_size);
+        // ws_log_debug("Active requests: %d, URLs in queue: %zu", crawler->active_requests, crawler->url_queue_size);
     }
 
     // If no more active requests and no more URLs in queue, crawling might be done.
     if (crawler->active_requests == 0 && crawler->url_queue_size == 0) {
         ws_log_info("Crawler finished all pending tasks.");
-        // Potentially signal completion to the user or stop event loop
-        // For now, we'll just let the event loop continue to run until explicitly stopped.
+        ws_event_loop_stop(crawler->event_loop); // Stop the event loop if desired
     }
 }
 
